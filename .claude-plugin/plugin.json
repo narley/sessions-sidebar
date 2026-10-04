@@ -1,0 +1,6 @@
+{
+  "name": "sessions-sidebar",
+  "version": "0.1.0",
+  "description": "Sidebar listing every Claude Code session open on this machine",
+  "types": "./types/index.d.ts"
+}
