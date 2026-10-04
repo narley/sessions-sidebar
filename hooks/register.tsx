@@ -73,6 +73,8 @@ type RegisteredSession = {
   kind: string
   name?: string
   status?: string
+  // set while Remote Control is on, null once it is turned off
+  bridgeSessionId?: string | null
 }
 
 type Worktree = { path: string; branch?: string; repo: string; isMain: boolean }
@@ -701,6 +703,8 @@ const loadSessions = async (
         effort: states[index]?.effort,
         cost: states[index]?.cost,
         context: states[index]?.context,
+        // Remote Control is on; whether a phone has it open is not told to mods
+        isRemote: typeof one.bridgeSessionId === 'string',
         isCurrent: one.sessionId === current,
       }
     }),
@@ -1421,6 +1425,10 @@ export const register: Register = on => {
       name: 'sessions-sidebar',
       description: 'Toggle the sidebar of open Claude Code sessions',
     })
+    await $.command.register({
+      name: 'statusline-toggle',
+      description: 'Hide or show the status line in every session of this profile',
+    })
     // only a session that has never published its state is new: a reload keeps the person's /color
     const isOpenedByNewSession = (await $.env.get('SESSIONS_SIDEBAR_COLOR')) === 'random'
     const ownState = stateFileOf(await configDirOf($), await $.session.id())
@@ -1446,6 +1454,21 @@ export const register: Register = on => {
     if (e.reason === 'prompt_input_exit') await focusNextSession($).catch(() => undefined)
 
     return next(e)
+  })
+
+  // the profile's status line script prints nothing while this file sits beside it, so every
+  // session hides it at its next redraw
+  on('command.run', { command: 'statusline-toggle' }, async $ => {
+    const marker = `${await configDirOf($)}/statusline.hidden`
+    if (await $.fs.exists(marker).catch(() => false)) {
+      await $.process.run(['rm', '-f', marker])
+
+      return { text: 'Status line shown in every session.' }
+    }
+
+    await $.fs.write(marker, '')
+
+    return { text: 'Status line hidden in every session.' }
   })
 
   on('command.run', { command: 'sessions-sidebar' }, async $ => {
@@ -1665,11 +1688,14 @@ export const register: Register = on => {
       icon,
       fill,
       text,
+      trail,
     }: {
       one: SessionRow
       icon: keyof typeof DETAIL_ICONS
       fill?: { text: string; color: string }
       text: string
+      // drawn right after the text, which gives way to it
+      trail?: { text: string; color?: string; isDim: boolean }
     }) => (
       <Box flexDirection="row">
         {marker(one)}
@@ -1680,7 +1706,7 @@ export const register: Register = on => {
             {fill !== undefined && <Text color={fill.color}>{fill.text}</Text>}
           </Text>
         </Box>
-        <Box flexGrow={1} flexShrink={1} overflow="hidden">
+        <Box flexShrink={1} overflow="hidden">
           <Text
             dimColor
             wrap="truncate-end"
@@ -1689,6 +1715,13 @@ export const register: Register = on => {
             {text}
           </Text>
         </Box>
+        {trail !== undefined && (
+          <Box flexShrink={0}>
+            <Text color={trail.color} dimColor={trail.isDim}>
+              {trail.text}
+            </Text>
+          </Box>
+        )}
       </Box>
     )
     const isCompact = level === 'compact'
@@ -1783,6 +1816,8 @@ export const register: Register = on => {
                   ? `${one.context.window / 1_000_000}M`
                   : `${Math.round(one.context.window / 1000)}k`
               }`,
+              // Remote Control is on, in a soft red
+              trail: one.isRemote ? { text: '  rc', color: '#E06C75', isDim: false } : undefined,
             })}
           {isFull &&
             one.cost !== undefined &&

@@ -16,6 +16,7 @@ const FILES: Record<string, object> = {
     kind: 'interactive',
     name: 'ioi-main',
     status: 'busy',
+    bridgeSessionId: 'session_me',
   },
   '/cfg/sessions/2.json': {
     pid: 2,
@@ -33,6 +34,7 @@ const FILES: Record<string, object> = {
     startedAt: 5,
     kind: 'interactive',
     status: 'idle',
+    bridgeSessionId: 'session_other',
   },
   '/cfg/sessions/4.json': {
     pid: 4,
@@ -42,6 +44,8 @@ const FILES: Record<string, object> = {
     kind: 'interactive',
     name: '2441-autopilot',
     status: 'idle',
+    // Remote Control turned off
+    bridgeSessionId: null,
   },
   // named after ticket 2412 while sitting in the repo: shares the 2412 worktree with session 3;
   // dead unless a test's ps lists pid 5
@@ -240,7 +244,9 @@ const openSidebar = async (
       JSON.stringify(FILES[e.path] ?? STATES[e.path] ?? TITLES[e.path]),
   }))
   on('fs.exists', (_$, e) => ({
-    value: ['/repo/ioi', '/cfg/projects/-repo-ioi/me/workflows/wf_done.json'].includes(e.path),
+    value:
+      written.some(one => one.path === e.path) ||
+      ['/repo/ioi', '/cfg/projects/-repo-ioi/me/workflows/wf_done.json'].includes(e.path),
   }))
   // held: a wait resolves only when a test moves the clock on
   const clock = mock.clock(on, { now: NOW })
@@ -823,6 +829,44 @@ test('⌂ at the top picks the repos every section shows', async ($, on) => {
   expect(await ui.find({ key: 'session-3' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: 'ioi-main' })).toBeUndefined()
   expect(await ui.find({ key: 'repos-toggle', text: 'fix ▾' })).toBeDefined()
+})
+
+test('/statusline-toggle hides the status line in every session, then shows it again', async ($, on) => {
+  const commands: string[] = []
+  const written: { path: string; text: string }[] = []
+  await openSidebar(
+    $,
+    on,
+    '    1\n',
+    argv => {
+      commands.push(argv.join(' '))
+
+      return ''
+    },
+    written,
+  )
+  const toggle = () =>
+    $.command.run({
+      command: 'statusline-toggle',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 200 },
+    })
+
+  expect(await toggle()).toMatchObject({ text: 'Status line hidden in every session.' })
+  expect(written).toContainEqual({ path: '/cfg/statusline.hidden', text: '' })
+  // ponytail: the stub's fs.exists remembers the write, not the rm
+  expect(await toggle()).toMatchObject({ text: 'Status line shown in every session.' })
+  expect(commands).toContain('rm -f /cfg/statusline.hidden')
+})
+
+test('a live session with Remote Control on shows rc after its context', async ($, on) => {
+  await openSidebar($, on, '    1\n    3\n    4\n')
+
+  const ui = await mountPane($, 'terminal')
+  // 'me' and 'other' have it on; 2441-autopilot turned it off
+  const marks = await ui.findAll({ type: 'Text', text: /^ {2}rc$/ })
+  expect(marks.map(found => found.props.color)).toEqual(['#E06C75', '#E06C75'])
 })
 
 test('closed, ad hoc and finished sessions show what they last saved as their cost', async ($, on) => {

@@ -20,6 +20,8 @@ export type SessionRow = {
   cost?: number
   // how full its context window is, as the status line reads it; absent before its first response
   context?: { percent: number; window: number }
+  // Remote Control is on
+  isRemote: boolean
   isCurrent: boolean
 }
 
