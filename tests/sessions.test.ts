@@ -438,16 +438,33 @@ test('lists named sessions whose worktree was deleted as closed, and resumes one
   expect(opened).toEqual(['open warppreview://tab_config/sessions-sidebar-resume'])
 })
 
-test('named sessions with no worktree list in Ad hoc: the last week, older ones on demand', async ($, on) => {
+test('Closed lists idle worktrees and named sessions with none; its filter picks either', async ($, on) => {
   const written: { path: string; text: string }[] = []
   await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
 
   const ui = await mountPane($, 'terminal')
-  // folded by default
-  expect(await ui.find({ type: 'Button', text: 'Session Panel Design' })).toBeUndefined()
-  await ui.press({ key: 'toggle-checkout' })
+  // both kinds: the worktree first, then the named sessions of the last week
+  expect(await ui.find({ type: 'Button', text: '2418-currency' })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: 'Session Panel Design' })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: 'Troubleshooting' })).toBeUndefined()
+  // 2 worktrees and 1 named session this week
+  expect((await ui.find({ type: 'Text', text: /^All 3$/ }))?.props.color).toBe('cyan')
+  expect(await ui.find({ key: 'dormant-choice-worktrees', text: 'Worktrees 2' })).toBeDefined()
+  expect(await ui.find({ key: 'dormant-choice-adhoc', text: 'Ad hoc 1' })).toBeDefined()
+
+  // the filter is shared, like the detail level
+  await ui.press({ key: 'dormant-choice-worktrees' })
+  expect(written.at(-1)).toEqual({
+    path: '/cfg/sessions-sidebar/filters.json',
+    text: '{"dormant":"worktrees"}',
+  })
+  expect(await ui.find({ type: 'Button', text: '2418-currency' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: 'Session Panel Design' })).toBeUndefined()
+  expect(await ui.find({ key: 'checkout-older' })).toBeUndefined()
+  await ui.press({ key: 'dormant-choice-adhoc' })
+  expect(await ui.find({ type: 'Button', text: '2418-currency' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: 'Session Panel Design' })).toBeDefined()
+  await ui.press({ key: 'dormant-choice-all' })
 
   // the older ones are a menu under their row, ten at a time
   await ui.press({ key: 'checkout-older' })
@@ -475,22 +492,72 @@ test('named sessions with no worktree list in Ad hoc: the last week, older ones 
     path: '/cfg/sessions-sidebar/archived.json',
     text: '["recent"]',
   })
-  // archived, it goes back to Ad hoc, not Finished
+  // archived, it goes back to Closed, not Finished
   await ui.press({ key: 'toggle-archived' })
   await ui.press({ key: 'archived-recent-menu' })
-  expect(await ui.find({ type: 'Button', text: '› Move back to Ad hoc' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: '› Move back to Closed' })).toBeDefined()
 })
 
-test('≡ on the Ad hoc heading archives every ad hoc session listed', async ($, on) => {
+test('Live and Archived have the same filter, each its own', async ($, on) => {
   const written: { path: string; text: string }[] = []
   await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
 
   const ui = await mountPane($, 'terminal')
-  await ui.press({ key: 'heading-checkout-menu' })
-  await ui.press({ key: 'answer-heading-checkout-1' })
+  // 'other' works in the 2412 worktree and 2441-autopilot in 2441's; 'me' in the main checkout
+  expect(await ui.find({ key: 'live-choice-worktrees', text: 'Worktrees 2' })).toBeDefined()
+  expect(await ui.find({ key: 'live-choice-adhoc', text: 'Ad hoc 1' })).toBeDefined()
+  await ui.press({ key: 'live-choice-worktrees' })
+  expect(await ui.find({ type: 'Text', text: 'ioi-main' })).toBeUndefined()
+  expect(await ui.find({ key: 'session-3' })).toBeDefined()
+  // Close all takes what is shown
+  await ui.press({ key: 'heading-live-menu' })
+  expect(await ui.find({ type: 'Text', text: /Close all 2 live sessions/ })).toBeDefined()
+  await ui.press({ key: 'heading-live-menu' })
+  // the footer still counts every live session: 12.40 + 3.05
+  expect(await ui.find({ type: 'Text', text: /^ \$ 15\.45 live/ })).toBeDefined()
+  // Closed keeps its own
+  expect((await ui.find({ type: 'Text', text: /^All \d+$/ }))?.props.color).toBe('cyan')
+
+  // archive the ad hoc one and the finished one, then filter Archived
+  await ui.press({ key: 'checkout-recent-menu' })
+  await ui.press({ key: 'answer-checkout-recent-1' })
+  await ui.press({ key: 'closed-closed1-menu' })
+  await ui.press({ key: 'answer-closed-closed1-1' })
+  await ui.press({ key: 'toggle-archived' })
+  expect(await ui.find({ key: 'archived-choice-adhoc', text: 'Ad hoc 1' })).toBeDefined()
+  await ui.press({ key: 'archived-choice-adhoc' })
+  expect(await ui.find({ key: 'archived-recent' })).toBeDefined()
+  expect(await ui.find({ key: 'archived-closed1' })).toBeUndefined()
+  expect(written.at(-1)).toEqual({
+    path: '/cfg/sessions-sidebar/filters.json',
+    text: '{"live":"worktrees","archived":"adhoc"}',
+  })
+})
+
+test('≡ on the Closed heading archives the ad hoc sessions listed, never a worktree', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
+
+  const ui = await mountPane($, 'terminal')
+  // with worktrees only there is nothing to archive
+  await ui.press({ key: 'dormant-choice-worktrees' })
+  await ui.press({ key: 'heading-dormant-menu' })
+  expect(await ui.find({ type: 'Button', text: '› Reopen all' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: '› Archive all' })).toBeUndefined()
+  await ui.press({ key: 'heading-dormant-menu' })
+
+  await ui.press({ key: 'dormant-choice-all' })
+  await ui.press({ key: 'heading-dormant-menu' })
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: /^The \d+ closed sessions listed: reopen each in a new tab, or archive the 1 ad hoc ones\?$/,
+    }),
+  ).toBeDefined()
+  await ui.press({ key: 'answer-heading-dormant-1' })
   // a second step before anything moves
   expect(written.some(file => file.path.endsWith('/archived.json'))).toBe(false)
-  await ui.press({ key: 'answer-heading-checkout-0' })
+  await ui.press({ key: 'answer-heading-dormant-0' })
 
   // the older ones are not listed, so they stay
   expect(written.at(-1)).toEqual({
@@ -513,14 +580,12 @@ test('a section collapses and expands from its heading, for every session', asyn
   // list of folded sections, so Archived, missing from it, keeps its default
   expect(written.at(-1)).toEqual({
     path: '/cfg/sessions-sidebar/collapsed.json',
-    text: '{"live":false,"dormant":true,"checkout":true,"closed":false,"archived":true}',
+    text: '{"live":false,"dormant":true,"closed":false,"archived":true}',
   })
 
   await ui.press({ key: 'toggle-dormant' })
   expect(await ui.find({ type: 'Button', text: '2418-currency' })).toBeDefined()
-  expect(written.at(-1)?.text).toBe(
-    '{"live":false,"dormant":false,"checkout":true,"closed":false,"archived":true}',
-  )
+  expect(written.at(-1)?.text).toBe('{"live":false,"dormant":false,"closed":false,"archived":true}')
 })
 
 test('≡ Finish on a merged session closes it, its worktree removed once it has exited', async ($, on) => {
@@ -802,7 +867,6 @@ test('⌂ at the top picks the repos every section shows', async ($, on) => {
   const ui = await mountPane($, 'terminal')
   // with no choice saved, the repos the live sessions run in
   expect(await ui.find({ key: 'repos-toggle', text: 'ioi ▾' })).toBeDefined()
-  await ui.press({ key: 'toggle-checkout' })
   expect(await ui.find({ type: 'Button', text: '2418-fix-side' })).toBeUndefined()
 
   await ui.press({ key: 'repos-toggle' })
@@ -873,7 +937,6 @@ test('closed, ad hoc and finished sessions show what they last saved as their co
   await openSidebar($, on, '    1\n    3\n    4\n')
 
   const ui = await mountPane($, 'terminal')
-  await ui.press({ key: 'toggle-checkout' })
   // the 2418 worktree's session, the newest titled after its ticket
   expect(await ui.find({ type: 'Text', text: /^ {3}\$ 2097\.00 spent$/ })).toBeDefined()
   // Finished: closed1's last saved total
@@ -978,9 +1041,11 @@ test('≡ on the Closed heading reopens every closed session, one tab at a time'
   )
 
   const ui = await mountPane($, 'terminal')
+  // the worktrees only: Reopen all takes what the filter shows
+  await ui.press({ key: 'dormant-choice-worktrees' })
   await ui.press({ key: 'heading-dormant-menu' })
   expect(
-    await ui.find({ type: 'Text', text: /^Reopen all \d+ closed sessions, each in a new tab\?$/ }),
+    await ui.find({ type: 'Text', text: /^Reopen all \d+ closed worktrees, each in a new tab\?$/ }),
   ).toBeDefined()
   await ui.press({ key: 'answer-heading-dormant-0' })
   // the next waits until Warp has read the tab config the first rewrote

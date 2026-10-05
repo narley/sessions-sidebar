@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type {
   CheckoutRow,
+  KindFilter,
   ClosedRow,
   DetailLevel,
   DormantRow,
@@ -34,16 +35,23 @@ const repoSearch = atom({ plugin: 'sessions-sidebar', key: 'repoSearch' } as con
 const sectionSearches = atom({ plugin: 'sessions-sidebar', key: 'searches' } as const, {})
 // ids of closed sessions moved to Archived, shared by every session's sidebar
 const archivedIds = atom({ plugin: 'sessions-sidebar', key: 'archived' } as const, [])
-const SECTIONS: Section[] = ['live', 'dormant', 'checkout', 'closed', 'archived']
-// how a section starts until someone folds or opens it: Closed and Archived only grow, and are the
+const SECTIONS: Section[] = ['live', 'dormant', 'closed', 'archived']
+// how a section starts until someone folds or opens it: Finished and Archived only grow, and are the
 // least looked at
 const IS_COLLAPSED_BY_DEFAULT: Record<Section, boolean> = {
   live: false,
   dormant: false,
-  checkout: true,
   closed: true,
   archived: true,
 }
+// which of a section's two kinds it lists: those with a worktree, and ad hoc ones without
+const KIND_FILTERS: { id: KindFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'worktrees', label: 'Worktrees' },
+  { id: 'adhoc', label: 'Ad hoc' },
+]
+// each section's, shared by every session's sidebar like the detail level; absent is all
+const sectionFilters = atom({ plugin: 'sessions-sidebar', key: 'filters' } as const, {})
 const DEFAULT_COLLAPSED = SECTIONS.filter(section => IS_COLLAPSED_BY_DEFAULT[section])
 const collapsedSections = atom(
   { plugin: 'sessions-sidebar', key: 'collapsed' } as const,
@@ -765,6 +773,17 @@ const reposFileOf = (configDir: string) => `${configDir}/sessions-sidebar/repos.
 const isPathList = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every(one => typeof one === 'string')
 
+const filtersFileOf = (configDir: string) => `${configDir}/sessions-sidebar/filters.json`
+
+const setSectionFilter = async ($: EngineInterface, section: Section, filter: KindFilter) => {
+  const changed = { ...(await read($, sectionFilters)), [section]: filter }
+  await $.fs.write(filtersFileOf(await configDirOf($)), JSON.stringify(changed))
+  await update($, sectionFilters, () => changed)
+}
+
+const isKindFilter = (value: unknown): value is KindFilter =>
+  KIND_FILTERS.some(one => one.id === value)
+
 const setDetailLevel = async ($: EngineInterface, level: DetailLevel) => {
   await $.fs.write(detailFileOf(await configDirOf($)), JSON.stringify(level))
   await update($, detailLevel, () => level)
@@ -798,6 +817,7 @@ const refresh = async ($: EngineInterface) => {
     collapsed,
     archived,
     detail,
+    filters,
     usage,
     now,
   ] = await Promise.all([
@@ -818,6 +838,19 @@ const refresh = async ($: EngineInterface) => {
         return DETAIL_LEVELS.find(level => level === saved) ?? 'full'
       })
       .catch((): DetailLevel => 'full'),
+    $.fs
+      .read(filtersFileOf(configDir))
+      .then((text): Partial<Record<Section, KindFilter>> => {
+        const saved: unknown = JSON.parse(String(text))
+        if (typeof saved !== 'object' || saved === null) return {}
+
+        return Object.fromEntries(
+          Object.entries(saved).filter(
+            ([section, kind]) => SECTIONS.some(one => one === section) && isKindFilter(kind),
+          ),
+        )
+      })
+      .catch((): Partial<Record<Section, KindFilter>> => ({})),
     $.session.usage().catch(() => undefined),
     $.clock.now(),
   ])
@@ -853,6 +886,9 @@ const refresh = async ($: EngineInterface) => {
     await update($, collapsedSections, () => collapsed)
   }
   if (detail !== (await read($, detailLevel))) await update($, detailLevel, () => detail)
+  if (JSON.stringify(filters) !== JSON.stringify(await read($, sectionFilters))) {
+    await update($, sectionFilters, () => filters)
+  }
   if (JSON.stringify(repos) !== JSON.stringify(await read($, repoChoice))) {
     await update($, repoChoice, () => repos)
   }
@@ -1515,6 +1551,7 @@ export const register: Register = on => {
       level,
       repos,
       repoQuery,
+      filters,
     ] = await Promise.all([
       read($, rows),
       read($, dormantRows),
@@ -1531,6 +1568,7 @@ export const register: Register = on => {
       read($, detailLevel),
       read($, repoChoice),
       read($, repoSearch),
+      read($, sectionFilters),
     ])
     const columns = Math.max(1, e.props.bodyColumns)
     const rule = '─'.repeat(columns)
@@ -1578,6 +1616,7 @@ export const register: Register = on => {
       matched,
       menu,
       openFirst,
+      choices,
     }: {
       id: Section
       title: string
@@ -1585,11 +1624,18 @@ export const register: Register = on => {
       matched: number
       menu?: { text: string; options: string[]; handle: (choice: string) => Promise<unknown> }
       openFirst: (query: string) => Promise<unknown>
+      // a line of filters under the title: the active one bold cyan, the others Buttons
+      choices?: {
+        active: string
+        options: { id: string; label: string }[]
+        choose: (id: string) => Promise<unknown>
+      }
     }) => ({
       rows:
         3 +
         questionRows(`heading-${section}`) +
-        (isSearching(section) && !collapsed.includes(section) ? 1 : 0),
+        (isSearching(section) && !collapsed.includes(section) ? 1 : 0) +
+        (choices !== undefined && !collapsed.includes(section) ? 1 : 0),
       element: (
         <Box flexDirection="column" marginBottom={1} flexShrink={0}>
           <Box flexDirection="row">
@@ -1653,6 +1699,31 @@ export const register: Register = on => {
             />
           )}
           {menu !== undefined && questionBox(`heading-${section}`, menu.handle)}
+          {choices !== undefined && !collapsed.includes(section) && (
+            <Box key={`${section}-choices-row`} flexDirection="row">
+              <Text> </Text>
+              {choices.options.map((one, index) => (
+                <Box key={`${section}-choice-${one.id}-row`} flexDirection="row" flexShrink={0}>
+                  <Text dimColor>{index === 0 ? ' ' : ' · '}</Text>
+                  {one.id === choices.active ? (
+                    <Text bold color="cyan">
+                      {one.label}
+                    </Text>
+                  ) : (
+                    <Button
+                      key={`${section}-choice-${one.id}`}
+                      plain
+                      dimColor
+                      hover={{ color: 'cyan', dimColor: false }}
+                      onPress={() => choices.choose(one.id)}
+                    >
+                      {one.label}
+                    </Button>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          )}
           <Text dimColor>{rule}</Text>
         </Box>
       ),
@@ -1932,16 +2003,34 @@ export const register: Register = on => {
         const first = rows.find(one => holds(query, textsOf(one)))
         if (first !== undefined) await open(first)
       }
+    const kindOf = (section: Section) => filters[section] ?? 'all'
+    const keeps = (section: Section, hasWorktree: boolean) =>
+      kindOf(section) === 'all' || (kindOf(section) === 'worktrees') === hasWorktree
+    // the filter line under a heading, each choice with how many it lists, the search aside
+    const kindChoices = (section: Section, counts: { worktrees: number; adhoc: number }) => ({
+      active: kindOf(section),
+      options: KIND_FILTERS.map(one => ({
+        ...one,
+        label: `${one.label} ${
+          (one.id === 'adhoc' ? 0 : counts.worktrees) + (one.id === 'worktrees' ? 0 : counts.adhoc)
+        }`,
+      })),
+      choose: (id: string) => setSectionFilter($, section, isKindFilter(id) ? id : 'all'),
+    })
     // only those in the repos picked; the rows atom keeps them all for /exit's next tab
-    const list = allLive.filter(one => repos.selected.includes(one.repo))
+    const inRepos = allLive.filter(one => repos.selected.includes(one.repo))
+    // then the kind: a linked worktree, or the main checkout; Close all takes what is left
+    const list = inRepos.filter(one => keeps('live', one.worktree !== undefined))
     const shownLive = list.filter(one => holds(searches.live ?? '', liveTexts(one)))
     const shownDormant = dormant.filter(one => holds(searches.dormant ?? '', placeTexts(one)))
     const shownClosed = closed.filter(one => !archived.includes(one.sessionId))
     const matchedClosed = shownClosed.filter(one => holds(searches.closed ?? '', placeTexts(one)))
-    const archivedRows = [
+    const archivedAll = [
       ...closed.map(one => ({ ...one, from: 'Finished', isGone: true })),
-      ...checkout.map(one => ({ ...one, from: 'Ad hoc', isGone: false })),
+      ...checkout.map(one => ({ ...one, from: 'Closed', isGone: false })),
     ].filter(one => archived.includes(one.sessionId))
+    // archived from Finished, they had a worktree
+    const archivedRows = archivedAll.filter(one => keeps('archived', one.from === 'Finished'))
     const matchedArchived = archivedRows.filter(one =>
       holds(searches.archived ?? '', placeTexts(one)),
     )
@@ -1958,7 +2047,7 @@ export const register: Register = on => {
     })
     const shownCheckout = checkout.filter(one => !archived.includes(one.sessionId) && one.isRecent)
     const matchedCheckout = shownCheckout.filter(one =>
-      holds(searches.checkout ?? '', placeTexts(one)),
+      holds(searches.dormant ?? '', placeTexts(one)),
     )
     const older = checkout.filter(one => !archived.includes(one.sessionId) && !one.isRecent)
     // the menu is open while the question's key names it, with the page on offer:
@@ -2182,6 +2271,57 @@ export const register: Register = on => {
         </Box>
       ),
     }
+    // Closed's rows as the filter has them, before and after its search
+    const filter = kindOf('dormant')
+    const closedCount =
+      (filter === 'adhoc' ? 0 : dormant.length) +
+      (filter === 'worktrees' ? 0 : shownCheckout.length)
+    const closedMatched =
+      (filter === 'adhoc' ? 0 : shownDormant.length) +
+      (filter === 'worktrees' ? 0 : matchedCheckout.length)
+    // the heading's ≡ acts on what the filter shows; only a session, not a worktree, is archived
+    const closedEntries = [
+      ...(filter === 'adhoc'
+        ? []
+        : dormant.map(one => ({ texts: placeTexts(one), open: () => resumeInWarpTab($, one) }))),
+      ...(filter === 'worktrees'
+        ? []
+        : shownCheckout.map(one => ({
+            texts: placeTexts(one),
+            open: () => resumeClosedSession($, one),
+          }))),
+    ]
+    const reopenable = closedEntries.map(entry => entry.open)
+    const archivable = filter === 'worktrees' ? [] : shownCheckout
+    const closedMenu =
+      reopenable.length === 0
+        ? undefined
+        : {
+            text:
+              archivable.length === 0
+                ? `Reopen all ${reopenable.length} closed ${
+                    filter === 'worktrees' ? 'worktrees' : 'sessions'
+                  }, each in a new tab?`
+                : archivable.length === reopenable.length
+                  ? `The ${reopenable.length} ad hoc sessions listed: reopen each in a new tab, or archive them?`
+                  : `The ${reopenable.length} closed sessions listed: reopen each in a new tab, or archive the ${archivable.length} ad hoc ones?`,
+            options: archivable.length === 0 ? [REOPEN_ALL] : [REOPEN_ALL, ARCHIVE_ALL],
+            handle: (choice: string) =>
+              choice === ARCHIVE_ALL
+                ? ask(
+                    $,
+                    'heading-dormant',
+                    `Really archive all ${archivable.length} ad hoc sessions listed?`,
+                    [CONFIRM_ARCHIVE_ALL],
+                  )
+                : choice === CONFIRM_ARCHIVE_ALL
+                  ? setArchived(
+                      $,
+                      archivable.map(one => one.sessionId),
+                      true,
+                    )
+                  : reopenAll($, reopenable),
+          }
     const sections = [
       {
         id: 'live' as const,
@@ -2189,6 +2329,10 @@ export const register: Register = on => {
         count: list.length,
         matched: shownLive.length,
         openFirst: firstOf(list, liveTexts, one => focusWarpTab($, one)),
+        choices: kindChoices('live', {
+          worktrees: inRepos.filter(one => one.worktree !== undefined).length,
+          adhoc: inRepos.filter(one => one.worktree === undefined).length,
+        }),
         // the other two levels to switch to, then Close all
         menu: {
           text: `Showing ${level} detail. Close all ${list.length} live sessions, keeping their worktrees?${
@@ -2217,63 +2361,35 @@ export const register: Register = on => {
         },
         items: shownLive.map(liveRow),
       },
+      // paused work: worktrees no session runs in (↻), then named sessions that never had one
+      // (≡), newest first, with the older of those in their own menu; the filter picks either
       {
         id: 'dormant' as const,
         title: 'Closed',
-        count: dormant.length,
-        matched: shownDormant.length,
-        openFirst: firstOf(dormant, placeTexts, one => resumeInWarpTab($, one)),
-        menu:
-          dormant.length === 0
-            ? undefined
-            : {
-                text: `Reopen all ${dormant.length} closed sessions, each in a new tab?`,
-                options: [REOPEN_ALL],
-                handle: () =>
-                  reopenAll(
-                    $,
-                    dormant.map(one => () => resumeInWarpTab($, one)),
-                  ),
-              },
-        items: shownDormant.map(one =>
-          resumableRow({ ...one, key: `dormant-${one.path}`, glyph: '○', isGone: false }, () =>
-            resumeInWarpTab($, one),
-          ),
+        count: closedCount,
+        matched: closedMatched,
+        openFirst: firstOf(
+          closedEntries,
+          entry => entry.texts,
+          entry => entry.open(),
         ),
-      },
-      // named sessions that never had a worktree: investigations, tooling, one-off fixes
-      {
-        id: 'checkout' as const,
-        title: 'Ad hoc',
-        count: shownCheckout.length,
-        matched: matchedCheckout.length,
-        openFirst: firstOf(shownCheckout, placeTexts, one => resumeClosedSession($, one)),
-        menu:
-          shownCheckout.length === 0
-            ? undefined
-            : {
-                text: `The ${shownCheckout.length} ad hoc sessions listed: reopen each in a new tab, or archive them?`,
-                options: [REOPEN_ALL, ARCHIVE_ALL],
-                handle: (choice: string) =>
-                  choice === ARCHIVE_ALL
-                    ? ask(
-                        $,
-                        'heading-checkout',
-                        `Really archive all ${shownCheckout.length} ad hoc sessions listed?`,
-                        [CONFIRM_ARCHIVE_ALL],
-                      )
-                    : choice === CONFIRM_ARCHIVE_ALL
-                      ? setArchived(
-                          $,
-                          shownCheckout.map(one => one.sessionId),
-                          true,
-                        )
-                      : reopenAll(
-                          $,
-                          shownCheckout.map(one => () => resumeClosedSession($, one)),
-                        ),
-              },
-        items: [...matchedCheckout.map(checkoutRow), ...(older.length === 0 ? [] : [olderMenu])],
+        choices: kindChoices('dormant', {
+          worktrees: dormant.length,
+          adhoc: shownCheckout.length,
+        }),
+        menu: closedMenu,
+        items: [
+          ...(filter === 'adhoc'
+            ? []
+            : shownDormant.map(one =>
+                resumableRow(
+                  { ...one, key: `dormant-${one.path}`, glyph: '○', isGone: false },
+                  () => resumeInWarpTab($, one),
+                ),
+              )),
+          ...(filter === 'worktrees' ? [] : matchedCheckout.map(checkoutRow)),
+          ...(filter === 'worktrees' || older.length === 0 ? [] : [olderMenu]),
+        ],
       },
       {
         id: 'closed' as const,
@@ -2316,6 +2432,10 @@ export const register: Register = on => {
         matched: matchedArchived.length,
         // picking it up again takes it out of the archive
         openFirst: firstOf(archivedRows, placeTexts, resumeArchived),
+        choices: kindChoices('archived', {
+          worktrees: archivedAll.filter(one => one.from === 'Finished').length,
+          adhoc: archivedAll.filter(one => one.from !== 'Finished').length,
+        }),
         items: matchedArchived.map(one =>
           resumableRow(
             { ...one, key: `archived-${one.sessionId}`, glyph: '·' },
@@ -2346,7 +2466,8 @@ export const register: Register = on => {
     // pinned below the list: a rule and New Session, then its own section of usage figures under
     // another rule
     // every live session's cost, whatever a search hides; none when no session has one yet
-    const costs = list.flatMap(one => (one.cost === undefined ? [] : [one.cost]))
+    // the repos', whatever Live's filter hides, so the 7d and repo totals stay whole
+    const costs = inRepos.flatMap(one => (one.cost === undefined ? [] : [one.cost]))
     const totalCost = costs.length === 0 ? undefined : costs.reduce((sum, cost) => sum + cost, 0)
     // the live ones as they stand now; the week and the repo add what every other session saved
     const spent = [

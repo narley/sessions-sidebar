@@ -37,7 +37,10 @@ export type DormantRow = {
 // how much each live session shows: its name line alone; with worktree, branch and context; with all
 export type DetailLevel = 'compact' | 'standard' | 'full'
 
-export type Section = 'live' | 'dormant' | 'checkout' | 'closed' | 'archived'
+export type Section = 'live' | 'dormant' | 'closed' | 'archived'
+
+// what a section lists: both kinds, those with a worktree only, or the ad hoc ones only
+export type KindFilter = 'all' | 'worktrees' | 'adhoc'
 
 // a repo there are sessions of, by its main checkout's path, with how many run in it now
 export type RepoOption = { path: string; live: number }
@@ -77,6 +80,7 @@ declare module 'claude-code' {
       olderSearch: string
       searches: Partial<Record<Section, string>>
       detail: DetailLevel
+      filters: Partial<Record<Section, KindFilter>>
       repos: { selected: string[]; options: RepoOption[] }
       repoSearch: string
     }
