@@ -13,7 +13,8 @@ import type {
 } from '../types'
 
 const PANE = 'sessions-sidebar'
-const PANE_COLUMNS = 34
+// the width the person settled on; one they drag the dock to still wins, kept by Claude Code
+const PANE_COLUMNS = 45
 const REFRESH_MS = 3000
 const rows = atom({ plugin: 'sessions-sidebar', key: 'rows' } as const, [])
 const dormantRows = atom({ plugin: 'sessions-sidebar', key: 'dormant' } as const, [])
