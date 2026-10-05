@@ -37,7 +37,7 @@ export type DormantRow = {
 // how much each live session shows: its name line alone; with worktree, branch and context; with all
 export type DetailLevel = 'compact' | 'standard' | 'full'
 
-export type Section = 'live' | 'dormant' | 'closed' | 'archived'
+export type Section = 'live' | 'dormant' | 'closed'
 
 // what a section lists: both kinds, those with a worktree only, or the ad hoc ones only
 export type KindFilter = 'all' | 'worktrees' | 'adhoc'
@@ -53,11 +53,13 @@ export type ClosedRow = {
   transcript: string
   // what it last saved as its cost, in US dollars
   cost?: number
+  // used in the last week
+  isRecent: boolean
+  modifiedAt: number
 }
 
-// a named session that only ever worked in its repo's main checkout, now not running; recent when
-// used in the last week
-export type CheckoutRow = ClosedRow & { isRecent: boolean }
+// a named session that only ever worked in its repo's main checkout, now not running
+export type CheckoutRow = ClosedRow
 
 declare module 'claude-code' {
   interface PluginState {

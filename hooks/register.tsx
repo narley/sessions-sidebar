@@ -35,14 +35,12 @@ const repoSearch = atom({ plugin: 'sessions-sidebar', key: 'repoSearch' } as con
 const sectionSearches = atom({ plugin: 'sessions-sidebar', key: 'searches' } as const, {})
 // ids of closed sessions moved to Archived, shared by every session's sidebar
 const archivedIds = atom({ plugin: 'sessions-sidebar', key: 'archived' } as const, [])
-const SECTIONS: Section[] = ['live', 'dormant', 'closed', 'archived']
-// how a section starts until someone folds or opens it: Finished and Archived only grow, and are the
-// least looked at
+const SECTIONS: Section[] = ['live', 'dormant', 'closed']
+// how a section starts until someone folds or opens it: Done only grows, and is the least looked at
 const IS_COLLAPSED_BY_DEFAULT: Record<Section, boolean> = {
   live: false,
   dormant: false,
   closed: true,
-  archived: true,
 }
 // which of a section's two kinds it lists: those with a worktree, and ad hoc ones without
 const KIND_FILTERS: { id: KindFilter; label: string }[] = [
@@ -571,6 +569,7 @@ const loadClosedSessions = async (
         transcript: one.path,
         hasWorktree: worktree !== undefined,
         isRecent: now - one.mtimeMs <= RECENT_MS,
+        modifiedAt: one.mtimeMs,
         cost,
       },
     ]
@@ -581,7 +580,7 @@ const loadClosedSessions = async (
   )
 
   return {
-    closed: unique.filter(one => one.hasWorktree).map(({ hasWorktree, isRecent, ...one }) => one),
+    closed: unique.filter(one => one.hasWorktree).map(({ hasWorktree, ...one }) => one),
     // one resumed under its old name is live, its new transcript id aside
     checkout: unique
       .filter(one => !one.hasWorktree && !liveNames.has(one.name))
@@ -2071,24 +2070,25 @@ export const register: Register = on => {
     const list = inRepos.filter(one => keeps('live', one.worktree !== undefined))
     const shownLive = list.filter(one => holds(searches.live ?? '', liveTexts(one)))
     const shownDormant = dormant.filter(one => holds(searches.dormant ?? '', placeTexts(one)))
-    const shownClosed = closed.filter(one => !archived.includes(one.sessionId))
-    const matchedClosed = shownClosed.filter(one => holds(searches.closed ?? '', placeTexts(one)))
-    const archivedAll = [
-      ...closed.map(one => ({ ...one, from: 'Finished', isGone: true })),
-      ...checkout.map(one => ({ ...one, from: 'Closed', isGone: false })),
-    ].filter(one => archived.includes(one.sessionId))
-    // archived from Finished, they had a worktree
-    const archivedRows = archivedAll.filter(one => keeps('archived', one.from === 'Finished'))
-    const matchedArchived = archivedRows.filter(one =>
-      holds(searches.archived ?? '', placeTexts(one)),
-    )
-    const resumeArchived = async (one: ClosedRow) => {
-      await setArchived($, [one.sessionId], false)
+    // Done: sessions whose worktree is gone, and the ad hoc ones archived from Closed; newest first,
+    // the last week listed and the rest under its own older menu
+    const doneAll = [
+      ...closed.map(one => ({ ...one, isArchived: false })),
+      ...checkout
+        .filter(one => archived.includes(one.sessionId))
+        .map(one => ({ ...one, isArchived: true })),
+    ].sort((a, b) => b.modifiedAt - a.modifiedAt)
+    const doneKept = doneAll.filter(one => keeps('closed', !one.isArchived))
+    const doneRecent = doneKept.filter(one => one.isRecent)
+    const matchedDone = doneRecent.filter(one => holds(searches.closed ?? '', placeTexts(one)))
+    // picking an archived one up again takes it out of the archive, so it returns to Closed after
+    const resumeDone = async (one: ClosedRow) => {
+      if (archived.includes(one.sessionId)) await setArchived($, [one.sessionId], false)
       await resumeClosedSession($, one)
     }
     const busyCount = list.filter(one => one.status === 'busy').length
     const resumeOrArchive = (one: ClosedRow) => ({
-      text: 'Resume it, or archive it?',
+      text: 'Resume it, or archive it to Done?',
       options: [RESUME, ARCHIVE],
       handle: (choice: string) =>
         choice === ARCHIVE ? setArchived($, [one.sessionId], true) : resumeClosedSession($, one),
@@ -2097,108 +2097,116 @@ export const register: Register = on => {
     const matchedCheckout = shownCheckout.filter(one =>
       holds(searches.dormant ?? '', placeTexts(one)),
     )
-    const older = checkout.filter(one => !archived.includes(one.sessionId) && !one.isRecent)
-    // the menu is open while the question's key names it, with the page on offer:
-    // checkout-older-<page>; it takes the question's place, so one menu is open at a time
-    const olderPage = asked?.key.startsWith('checkout-older-')
-      ? Number(asked.key.split('-').at(-1))
-      : undefined
-    const matching = older.filter(one => holds(search, [one.name]))
-    const start = (olderPage ?? 0) * OLDER_PAGE_SIZE
-    const offered = matching.slice(start, start + OLDER_PAGE_SIZE)
-    const hasMore = matching.length > start + offered.length
-    const showOlderPage = (page: number) =>
-      update($, question, () => ({ key: `checkout-older-${page}`, text: '', options: [] }))
-    const closeOlder = () => update($, question, () => null)
-    const pickOlder = async (one: CheckoutRow) => {
-      await closeOlder()
-      await resumeClosedSession($, one)
-    }
-    const olderMenu = {
-      // the frame, the field, the count, the page, More and Cancel
-      rows: 2 + (olderPage === undefined ? 0 : 5 + offered.length + (hasMore ? 1 : 0)),
-      element: (
-        <Box flexDirection="column" marginBottom={1} flexShrink={0}>
-          <Box key="checkout-older-row">
-            <Button
-              key="checkout-older"
-              plain
-              dimColor
-              hover={{ color: 'cyan', dimColor: false }}
-              onPress={async () => {
-                if (olderPage !== undefined) return closeOlder()
-                await update($, olderSearch, () => '')
-                await showOlderPage(0)
-              }}
-            >
-              {` ≡ ${older.length} older`}
-            </Button>
-          </Box>
-          {olderPage !== undefined && (
-            <Box flexDirection="column" borderStyle="round" borderColor="cyan" marginLeft={2}>
-              {Input !== undefined && (
-                <Input
-                  key="checkout-older-search"
-                  placeholder="Search…"
-                  value={search}
-                  submitLabel="resume"
-                  autoFocus
-                  onInput={text =>
-                    void Promise.all([update($, olderSearch, () => text), showOlderPage(0)])
-                  }
-                  // Enter resumes the first match
-                  onSubmit={text => {
-                    const first = older.find(one => holds(text, [one.name]))
-                    if (first !== undefined) void pickOlder(first)
-                  }}
-                />
-              )}
-              <Text dimColor>
-                {matching.length === 0
-                  ? 'No match'
-                  : `${start + 1}–${start + offered.length} of ${matching.length}`}
-              </Text>
-              {offered.map((one, index) => (
-                <Box key={`checkout-older-pick-row-${index}`}>
+    // a section's sessions older than a week, under one row whose menu pages and searches them; the
+    // menu is open while the question's key names it with the page on offer, <id>-older-<page>, and
+    // takes the question's place, so one menu is open at a time
+    const olderPicker = (
+      id: string,
+      rows: readonly ClosedRow[],
+      pick: (one: ClosedRow) => Promise<unknown>,
+    ) => {
+      const olderPage = asked?.key.startsWith(`${id}-older-`)
+        ? Number(asked.key.split('-').at(-1))
+        : undefined
+      const matching = rows.filter(one => holds(search, [one.name]))
+      const start = (olderPage ?? 0) * OLDER_PAGE_SIZE
+      const offered = matching.slice(start, start + OLDER_PAGE_SIZE)
+      const hasMore = matching.length > start + offered.length
+      const showOlderPage = (page: number) =>
+        update($, question, () => ({ key: `${id}-older-${page}`, text: '', options: [] }))
+      const closeOlder = () => update($, question, () => null)
+      const pickOlder = async (one: ClosedRow) => {
+        await closeOlder()
+        await pick(one)
+      }
+      return {
+        // the frame, the field, the count, the page, More and Cancel
+        rows: 2 + (olderPage === undefined ? 0 : 5 + offered.length + (hasMore ? 1 : 0)),
+        element: (
+          <Box flexDirection="column" marginBottom={1} flexShrink={0}>
+            <Box key={`${id}-older-row`}>
+              <Button
+                key={`${id}-older`}
+                plain
+                dimColor
+                hover={{ color: 'cyan', dimColor: false }}
+                onPress={async () => {
+                  if (olderPage !== undefined) return closeOlder()
+                  await update($, olderSearch, () => '')
+                  await showOlderPage(0)
+                }}
+              >
+                {` ≡ ${rows.length} older`}
+              </Button>
+            </Box>
+            {olderPage !== undefined && (
+              <Box flexDirection="column" borderStyle="round" borderColor="cyan" marginLeft={2}>
+                {Input !== undefined && (
+                  <Input
+                    key={`${id}-older-search`}
+                    placeholder="Search…"
+                    value={search}
+                    submitLabel="resume"
+                    autoFocus
+                    onInput={text =>
+                      void Promise.all([update($, olderSearch, () => text), showOlderPage(0)])
+                    }
+                    // Enter resumes the first match
+                    onSubmit={text => {
+                      const first = rows.find(one => holds(text, [one.name]))
+                      if (first !== undefined) void pickOlder(first)
+                    }}
+                  />
+                )}
+                <Text dimColor>
+                  {matching.length === 0
+                    ? 'No match'
+                    : `${start + 1}–${start + offered.length} of ${matching.length}`}
+                </Text>
+                {offered.map((one, index) => (
+                  <Box key={`${id}-older-pick-row-${index}`}>
+                    <Button
+                      key={`${id}-older-pick-${index}`}
+                      plain
+                      hover={{ color: 'cyan' }}
+                      onPress={() => pickOlder(one)}
+                    >
+                      {`› ${one.name}`}
+                    </Button>
+                  </Box>
+                ))}
+                {hasMore && (
+                  <Box key={`${id}-older-more-row`}>
+                    <Button
+                      key={`${id}-older-more`}
+                      plain
+                      dimColor
+                      hover={{ color: 'cyan', dimColor: false }}
+                      onPress={() => showOlderPage(start / OLDER_PAGE_SIZE + 1)}
+                    >
+                      › More…
+                    </Button>
+                  </Box>
+                )}
+                <Box key={`${id}-older-cancel-row`}>
                   <Button
-                    key={`checkout-older-pick-${index}`}
-                    plain
-                    hover={{ color: 'cyan' }}
-                    onPress={() => pickOlder(one)}
-                  >
-                    {`› ${one.name}`}
-                  </Button>
-                </Box>
-              ))}
-              {hasMore && (
-                <Box key="checkout-older-more-row">
-                  <Button
-                    key="checkout-older-more"
+                    key={`${id}-older-cancel`}
                     plain
                     dimColor
                     hover={{ color: 'cyan', dimColor: false }}
-                    onPress={() => showOlderPage(start / OLDER_PAGE_SIZE + 1)}
+                    onPress={closeOlder}
                   >
-                    › More…
+                    › Cancel
                   </Button>
                 </Box>
-              )}
-              <Box key="checkout-older-cancel-row">
-                <Button
-                  key="checkout-older-cancel"
-                  plain
-                  dimColor
-                  hover={{ color: 'cyan', dimColor: false }}
-                  onPress={closeOlder}
-                >
-                  › Cancel
-                </Button>
               </Box>
-            </Box>
-          )}
-        </Box>
-      ),
+            )}
+          </Box>
+        ),
+      }
     }
+    const older = checkout.filter(one => !archived.includes(one.sessionId) && !one.isRecent)
+    const olderMenu = olderPicker('checkout', older, one => resumeClosedSession($, one))
     const checkoutRow = (one: CheckoutRow) =>
       resumableRow(
         { ...one, key: `checkout-${one.sessionId}`, glyph: '○', isGone: false },
@@ -2359,7 +2367,7 @@ export const register: Register = on => {
                 ? ask(
                     $,
                     'heading-dormant',
-                    `Really archive all ${archivable.length} ad hoc sessions listed?`,
+                    `Really archive all ${archivable.length} ad hoc sessions listed? They move to Done.`,
                     [CONFIRM_ARCHIVE_ALL],
                   )
                 : choice === CONFIRM_ARCHIVE_ALL
@@ -2441,63 +2449,47 @@ export const register: Register = on => {
       },
       {
         id: 'closed' as const,
-        title: 'Finished',
-        count: shownClosed.length,
-        matched: matchedClosed.length,
-        openFirst: firstOf(shownClosed, placeTexts, one => resumeClosedSession($, one)),
-        menu:
-          shownClosed.length === 0
-            ? undefined
-            : {
-                text: `Archive all ${shownClosed.length} finished sessions?`,
-                options: [ARCHIVE_ALL],
-                handle: (choice: string) =>
-                  choice === ARCHIVE_ALL
-                    ? ask(
-                        $,
-                        'heading-closed',
-                        `Really archive all ${shownClosed.length}? They move to Archived.`,
-                        [CONFIRM_ARCHIVE_ALL],
-                      )
-                    : setArchived(
-                        $,
-                        shownClosed.map(one => one.sessionId),
-                        true,
-                      ),
-              },
-        items: matchedClosed.map(one =>
-          resumableRow(
-            { ...one, key: `closed-${one.sessionId}`, glyph: '◌', isGone: true },
-            () => resumeClosedSession($, one),
-            resumeOrArchive(one),
-          ),
-        ),
-      },
-      {
-        id: 'archived' as const,
-        title: 'Archived',
-        count: archivedRows.length,
-        matched: matchedArchived.length,
-        // picking it up again takes it out of the archive
-        openFirst: firstOf(archivedRows, placeTexts, resumeArchived),
-        choices: kindChoices('archived', {
-          worktrees: archivedAll.filter(one => one.from === 'Finished').length,
-          adhoc: archivedAll.filter(one => one.from !== 'Finished').length,
+        title: 'Done',
+        count: doneRecent.length,
+        matched: matchedDone.length,
+        openFirst: firstOf(doneRecent, placeTexts, resumeDone),
+        // Worktrees: their worktree is gone; Ad hoc: archived from Closed
+        choices: kindChoices('closed', {
+          worktrees: doneAll.filter(one => one.isRecent && !one.isArchived).length,
+          adhoc: doneAll.filter(one => one.isRecent && one.isArchived).length,
         }),
-        items: matchedArchived.map(one =>
-          resumableRow(
-            { ...one, key: `archived-${one.sessionId}`, glyph: '·' },
-            () => resumeArchived(one),
-            {
-              text: `Resume it, or move it back to ${one.from}?`,
-              options: [RESUME, UNARCHIVE_TO(one.from)],
-              handle: async choice => {
-                await setArchived($, [one.sessionId], false)
-                if (choice === RESUME) await resumeClosedSession($, one)
+        items: [
+          ...matchedDone.map(one =>
+            resumableRow(
+              {
+                ...one,
+                key: `closed-${one.sessionId}`,
+                glyph: one.isArchived ? '·' : '◌',
+                isGone: !one.isArchived,
               },
-            },
+              () => resumeDone(one),
+              one.isArchived
+                ? {
+                    text: 'Resume it, or move it back to Closed?',
+                    options: [RESUME, UNARCHIVE_TO('Closed')],
+                    handle: async choice => {
+                      await setArchived($, [one.sessionId], false)
+                      if (choice === RESUME) await resumeClosedSession($, one)
+                    },
+                  }
+                : undefined,
+            ),
           ),
-        ),
+          ...(doneKept.length === doneRecent.length
+            ? []
+            : [
+                olderPicker(
+                  'done',
+                  doneKept.filter(one => !one.isRecent),
+                  resumeDone,
+                ),
+              ]),
+        ],
       },
     ]
     const blocks = [

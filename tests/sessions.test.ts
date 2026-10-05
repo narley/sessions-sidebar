@@ -201,7 +201,8 @@ const LISTINGS: Record<string, ReturnType<typeof entry>[]> = {
   '/cfg/projects/-repo-ioi': [
     entry('old.jsonl', 'file', 1),
     entry('named.jsonl', 'file', 5),
-    entry('closed1.jsonl', 'file', 3),
+    // finished an hour ago: Done lists it; closed3, long ago, goes under its older menu
+    entry('closed1.jsonl', 'file', NOW - 3_600_000),
     entry('closed2.jsonl', 'file', 4),
     entry('chat.jsonl', 'file', 2),
     entry('recent.jsonl', 'file', NOW - 60_000),
@@ -424,7 +425,7 @@ test('lists named sessions whose worktree was deleted as closed, and resumes one
   )
 
   const ui = await mountPane($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: 'Finished' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Done' })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: '2399-remove-expiry' })).toBeDefined()
   // the worktree is gone: red ⌂, its name struck through
   expect(await ui.find({ type: 'Text', text: 'worktree 2399' })).toBeDefined()
@@ -493,13 +494,18 @@ test('Closed lists idle worktrees and named sessions with none; its filter picks
     path: '/cfg/sessions-sidebar/archived.json',
     text: '["recent"]',
   })
-  // archived, it goes back to Closed, not Finished
-  await ui.press({ key: 'toggle-archived' })
-  await ui.press({ key: 'archived-recent-menu' })
-  expect(await ui.find({ type: 'Button', text: '› Move back to Closed' })).toBeDefined()
+  // archived, it moves to Done, and from there back to Closed
+  expect(await ui.find({ key: 'checkout-recent' })).toBeUndefined()
+  await ui.press({ key: 'closed-recent-menu' })
+  expect(
+    await ui.find({ type: 'Text', text: 'Resume it, or move it back to Closed?' }),
+  ).toBeDefined()
+  await ui.press({ key: 'answer-closed-recent-1' })
+  expect(written.at(-1)).toEqual({ path: '/cfg/sessions-sidebar/archived.json', text: '[]' })
+  expect(await ui.find({ key: 'checkout-recent' })).toBeDefined()
 })
 
-test('Live and Archived have the same filter, each its own', async ($, on) => {
+test('Live and Done have the same filter, each its own', async ($, on) => {
   const written: { path: string; text: string }[] = []
   await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
 
@@ -519,19 +525,17 @@ test('Live and Archived have the same filter, each its own', async ($, on) => {
   // Closed keeps its own
   expect((await ui.find({ type: 'Text', text: /^All \d+$/ }))?.props.color).toBe('cyan')
 
-  // archive the ad hoc one and the finished one, then filter Archived
+  // archive the ad hoc one; Done then holds it beside the finished one
   await ui.press({ key: 'checkout-recent-menu' })
   await ui.press({ key: 'answer-checkout-recent-1' })
-  await ui.press({ key: 'closed-closed1-menu' })
-  await ui.press({ key: 'answer-closed-closed1-1' })
-  await ui.press({ key: 'toggle-archived' })
-  expect(await ui.find({ key: 'archived-choice-adhoc', text: 'Ad hoc 1' })).toBeDefined()
-  await ui.press({ key: 'archived-choice-adhoc' })
-  expect(await ui.find({ key: 'archived-recent' })).toBeDefined()
-  expect(await ui.find({ key: 'archived-closed1' })).toBeUndefined()
+  expect(await ui.find({ key: 'closed-choice-worktrees', text: 'Worktrees 1' })).toBeDefined()
+  expect(await ui.find({ key: 'closed-choice-adhoc', text: 'Ad hoc 1' })).toBeDefined()
+  await ui.press({ key: 'closed-choice-adhoc' })
+  expect(await ui.find({ key: 'closed-recent' })).toBeDefined()
+  expect(await ui.find({ key: 'closed-closed1' })).toBeUndefined()
   expect(written.at(-1)).toEqual({
     path: '/cfg/sessions-sidebar/filters.json',
-    text: '{"live":"worktrees","archived":"adhoc"}',
+    text: '{"live":"worktrees","closed":"adhoc"}',
   })
 })
 
@@ -577,16 +581,15 @@ test('a section collapses and expands from its heading, for every session', asyn
   expect(await ui.find({ type: 'Button', text: '2418-currency' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: '2399-remove-expiry' })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: '+ New Session' })).toBeDefined()
-  // the other sessions' sidebars pick it up on their next refresh; the fixture's file is the older
-  // list of folded sections, so Archived, missing from it, keeps its default
+  // the other sessions' sidebars pick it up on their next refresh
   expect(written.at(-1)).toEqual({
     path: '/cfg/sessions-sidebar/collapsed.json',
-    text: '{"live":false,"dormant":true,"closed":false,"archived":true}',
+    text: '{"live":false,"dormant":true,"closed":false}',
   })
 
   await ui.press({ key: 'toggle-dormant' })
   expect(await ui.find({ type: 'Button', text: '2418-currency' })).toBeDefined()
-  expect(written.at(-1)?.text).toBe('{"live":false,"dormant":false,"closed":false,"archived":true}')
+  expect(written.at(-1)?.text).toBe('{"live":false,"dormant":false,"closed":false}')
 })
 
 test('≡ Finish on a merged session closes it, its worktree removed once it has exited', async ($, on) => {
@@ -724,54 +727,21 @@ test('≡ Finish unlocks a worktree its own Claude session locked, once that ses
   expect(commands[3]?.[9]).toBe('unlock')
 })
 
-test('≡ on a closed session archives it, folded by default; ≡ there moves it back', async ($, on) => {
+test('Done lists the last week’s finished sessions, each with ↻, older ones under its menu', async ($, on) => {
   const written: { path: string; text: string }[] = []
   await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
 
   const ui = await mountPane($, 'terminal')
-  // dormant rows keep ↻ and no menu
-  expect(await ui.find({ key: 'dormant-/repo/ioi/.claude/worktrees/2418-menu' })).toBeUndefined()
-  await ui.press({ key: 'closed-closed1-menu' })
-  expect(await ui.find({ type: 'Text', text: 'Resume it, or archive it?' })).toBeDefined()
-  await ui.press({ key: 'answer-closed-closed1-1' })
-  expect(written.at(-1)).toEqual({
-    path: '/cfg/sessions-sidebar/archived.json',
-    text: '["closed1"]',
-  })
-  expect(await ui.find({ key: 'closed-closed1' })).toBeUndefined()
-  expect(await ui.find({ key: 'archived-closed1' })).toBeUndefined()
-
-  await ui.press({ key: 'toggle-archived' })
-  expect(await ui.find({ key: 'archived-closed1' })).toBeDefined()
-  await ui.press({ key: 'archived-closed1-menu' })
-  expect(await ui.find({ type: 'Button', text: '› Move back to Finished' })).toBeDefined()
-  await ui.press({ key: 'answer-archived-closed1-1' })
-
+  // nothing to archive: a finished session just resumes
   expect(await ui.find({ key: 'closed-closed1' })).toBeDefined()
-  expect(written.at(-1)).toEqual({ path: '/cfg/sessions-sidebar/archived.json', text: '[]' })
-})
-
-test('≡ on the Closed Sessions heading archives every closed session at once', async ($, on) => {
-  const written: { path: string; text: string }[] = []
-  await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
-
-  const ui = await mountPane($, 'terminal')
-  await ui.press({ key: 'heading-closed-menu' })
-  expect(await ui.find({ type: 'Text', text: 'Archive all 2 finished sessions?' })).toBeDefined()
-  await ui.press({ key: 'answer-heading-closed-0' })
-  expect(
-    await ui.find({ type: 'Text', text: 'Really archive all 2? They move to Archived.' }),
-  ).toBeDefined()
-  await ui.press({ key: 'answer-heading-closed-0' })
-
-  // newest first, as the section lists them
-  expect(written.at(-1)).toEqual({
-    path: '/cfg/sessions-sidebar/archived.json',
-    text: '["closed3","closed1"]',
-  })
-  expect(await ui.find({ key: 'closed-closed1' })).toBeUndefined()
-  // nothing left to archive: no ≡ on the heading
+  expect(await ui.find({ key: 'closed-closed1-menu' })).toBeUndefined()
   expect(await ui.find({ key: 'heading-closed-menu' })).toBeUndefined()
+  expect(await ui.find({ key: 'closed-closed3' })).toBeUndefined()
+
+  await ui.press({ key: 'done-older' })
+  expect(await ui.find({ key: 'done-older-pick-0', text: '› 2401-prefix-e2e' })).toBeDefined()
+  await ui.press({ key: 'done-older-pick-0' })
+  expect(written.at(-1)?.text).toContain("--resume 'closed3'")
 })
 
 test('above New Session: the 5h and 7d windows and how long this prompt cache stays warm', async ($, on) => {
@@ -843,7 +813,7 @@ test('each live session shows what it has cost, and the footer their sum', async
   // one line: the live ones (15.45), then the week and the repo, which add what the others saved:
   // recent 0.4 this week, closed1 2.25 and closed2 2097 before; thousands shortened
   expect(
-    await ui.find({ type: 'Text', text: /^ \$ 15\.45 live · 15\.85 7d · 2\.1k repo$/ }),
+    await ui.find({ type: 'Text', text: /^ \$ 15\.45 live · 18\.10 7d · 2\.1k repo$/ }),
   ).toBeDefined()
 })
 
@@ -940,7 +910,7 @@ test('closed, ad hoc and finished sessions show what they last saved as their co
   const ui = await mountPane($, 'terminal')
   // the 2418 worktree's session, the newest titled after its ticket
   expect(await ui.find({ type: 'Text', text: /^ {3}\$ 2097\.00 spent$/ })).toBeDefined()
-  // Finished: closed1's last saved total
+  // Done: closed1's last saved total
   expect(await ui.find({ type: 'Text', text: /^ {3}\$ 2\.25 spent$/ })).toBeDefined()
   // Ad hoc
   expect(await ui.find({ type: 'Text', text: /^ {3}\$ 0\.40 spent$/ })).toBeDefined()
