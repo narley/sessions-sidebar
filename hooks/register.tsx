@@ -52,6 +52,17 @@ const KIND_FILTERS: { id: KindFilter; label: string }[] = [
 ]
 // each section's, shared by every session's sidebar like the detail level; absent is all
 const sectionFilters = atom({ plugin: 'sessions-sidebar', key: 'filters' } as const, {})
+// New Session's picker while open: the profile's default model, each model's saved effort, and the
+// effort picked for this launch (absent: each keeps its saved one); this sidebar's own
+const newSessionMenu = atom({ plugin: 'sessions-sidebar', key: 'newSession' } as const, null)
+// what New Session offers, by the alias `claude --model` takes and the key settings saves effort under
+const NEW_SESSION_MODELS = [
+  { model: 'opus[1m]', family: 'opus', label: 'Opus 5.5 1M', settingsKey: 'claude-opus-5-5' },
+  { model: 'sonnet', family: 'sonnet', label: 'Sonnet 5.5', settingsKey: 'claude-sonnet-5-5' },
+  { model: 'fable', family: 'fable', label: 'Fable 5.1', settingsKey: 'claude-fable-5-1' },
+  { model: 'haiku', family: 'haiku', label: 'Haiku 4.5', settingsKey: 'claude-haiku-4-5' },
+]
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const DEFAULT_COLLAPSED = SECTIONS.filter(section => IS_COLLAPSED_BY_DEFAULT[section])
 const collapsedSections = atom(
   { plugin: 'sessions-sidebar', key: 'collapsed' } as const,
@@ -1084,12 +1095,47 @@ const resumeClosedSession = async ($: EngineInterface, one: ClosedRow) => {
 }
 
 // the new session's own sidebar gives it a random colour
-const startNewSession = async ($: EngineInterface) =>
+const startNewSession = async (
+  $: EngineInterface,
+  { model, effort }: { model?: string; effort?: string },
+) =>
   openWarpTabRunning($, {
     title: 'New session',
     directory: await $.session.root(),
-    command: `SESSIONS_SIDEBAR_COLOR=random ${claudeCommand(await configDirOf($), '')}`,
+    command: `SESSIONS_SIDEBAR_COLOR=random ${claudeCommand(
+      await configDirOf($),
+      `${model === undefined ? '' : ` --model ${shellQuote(model)}`}${
+        effort === undefined ? '' : ` --effort ${effort}`
+      }`,
+    )}`,
   })
+
+// a second press folds it; the settings are read as it opens, so the badges show the saved efforts
+const toggleNewSessionMenu = async ($: EngineInterface) => {
+  if ((await read($, newSessionMenu)) !== null) return update($, newSessionMenu, () => null)
+
+  const settings = await $.fs
+    .read(`${await configDirOf($)}/settings.json`)
+    .then(
+      text =>
+        JSON.parse(String(text)) as {
+          model?: string
+          effortLevel?: string
+          modelSettings?: Record<string, { effortLevel?: string }>
+        },
+    )
+    .catch(() => undefined)
+
+  return update($, newSessionMenu, () => ({
+    defaultModel: settings?.model,
+    saved: Object.fromEntries(
+      NEW_SESSION_MODELS.map(one => [
+        one.model,
+        settings?.modelSettings?.[one.settingsKey]?.effortLevel ?? settings?.effortLevel,
+      ]),
+    ),
+  }))
+}
 
 // the row after this session in the sidebar's order, wrapping round to the first
 const nextSessionAfter = (list: readonly SessionRow[], pid: number) => {
@@ -1552,6 +1598,7 @@ export const register: Register = on => {
       repos,
       repoQuery,
       filters,
+      newMenu,
     ] = await Promise.all([
       read($, rows),
       read($, dormantRows),
@@ -1569,6 +1616,7 @@ export const register: Register = on => {
       read($, repoChoice),
       read($, repoSearch),
       read($, sectionFilters),
+      read($, newSessionMenu),
     ])
     const columns = Math.max(1, e.props.bodyColumns)
     const rule = '─'.repeat(columns)
@@ -2488,7 +2536,101 @@ export const register: Register = on => {
           : `${(usd / 1000).toFixed(usd < 10_000 ? 1 : 0)}k`
     const usageRows =
       usage.limits.length + (usage.cache === undefined ? 0 : 1) + (spent.length === 0 ? 0 : 1)
-    const footerRows = 2 + (usageRows > 0 ? 1 + usageRows : 0)
+    // Default first, as settings names it, then each model with the badge its session would wear
+    const newSessionPicker = (picker: NonNullable<typeof newMenu>) => {
+      const defaultModel = NEW_SESSION_MODELS.find(
+        one => one.model === picker.defaultModel || one.family === picker.defaultModel,
+      )
+      const launch = async (model: string | undefined) => {
+        await update($, newSessionMenu, () => null)
+        await startNewSession($, { model, effort: picker.effort })
+      }
+      const badge = (one: (typeof NEW_SESSION_MODELS)[number] | undefined) => {
+        const avatar = AVATARS.find(each => each.family === one?.family)
+        if (avatar === undefined || one === undefined) return <Text>{'     '}</Text>
+        const letter = EFFORT_LETTERS[picker.effort ?? picker.saved[one.model] ?? ''] ?? ''
+
+        return (
+          <Text>
+            <Text color={avatar.color}>▐</Text>
+            <Text backgroundColor={avatar.color} color="black" bold>
+              {`${avatar.letter}${letter}`}
+            </Text>
+            <Text color={avatar.color}>▌</Text>
+            {letter === '' ? '  ' : ' '}
+          </Text>
+        )
+      }
+      const choices = [
+        {
+          key: 'default',
+          label: `Default${defaultModel === undefined ? '' : ` · ${defaultModel.label}`}`,
+          one: defaultModel,
+          model: undefined,
+        },
+        ...NEW_SESSION_MODELS.map(one => ({
+          key: one.family,
+          label: one.label,
+          one,
+          model: one.model,
+        })),
+      ]
+
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" marginX={1}>
+          {choices.map(choice => (
+            <Box key={`new-session-pick-${choice.key}-row`} flexDirection="row">
+              <Box flexShrink={0}>{badge(choice.one)}</Box>
+              <Button
+                key={`new-session-pick-${choice.key}`}
+                plain
+                hover={{ color: 'cyan' }}
+                onPress={() => launch(choice.model)}
+              >
+                {choice.label}
+              </Button>
+            </Box>
+          ))}
+          <Box key="new-session-effort-row" flexDirection="row">
+            <Text dimColor>effort </Text>
+            {[undefined, ...EFFORT_LEVELS].map(level => (
+              <Box key={`new-session-effort-${level ?? 'saved'}-row`} flexShrink={0}>
+                <Text> </Text>
+                {picker.effort === level ? (
+                  <Text bold color="cyan">
+                    {level === undefined ? 'saved' : EFFORT_LETTERS[level]}
+                  </Text>
+                ) : (
+                  <Button
+                    key={`new-session-effort-${level ?? 'saved'}`}
+                    plain
+                    dimColor
+                    hover={{ color: 'cyan', dimColor: false }}
+                    onPress={() => update($, newSessionMenu, () => ({ ...picker, effort: level }))}
+                  >
+                    {level === undefined ? 'saved' : (EFFORT_LETTERS[level] ?? level)}
+                  </Button>
+                )}
+              </Box>
+            ))}
+          </Box>
+          <Box key="new-session-cancel-row">
+            <Button
+              key="new-session-cancel"
+              plain
+              dimColor
+              hover={{ color: 'cyan', dimColor: false }}
+              onPress={() => update($, newSessionMenu, () => null)}
+            >
+              › Cancel
+            </Button>
+          </Box>
+        </Box>
+      )
+    }
+    // the picker: its frame, Default, the models, the effort line and Cancel
+    const newMenuRows = newMenu === null ? 0 : 4 + NEW_SESSION_MODELS.length + 1
+    const footerRows = 2 + newMenuRows + (usageRows > 0 ? 1 + usageRows : 0)
     // the list's rows: the pane's, less the footer and the top line that shows "more above"
     const listRows = e.props.scroll.bodyRows - footerRows - 1
     const firstThatFitsToTheEnd = blocks.findIndex(
@@ -2517,10 +2659,11 @@ export const register: Register = on => {
         <Box flexDirection="column" flexShrink={0}>
           <Text dimColor>{shown < maxOffset ? ruleWith(' ▼ more ') : rule}</Text>
           <Box key="new-session-row" justifyContent="center">
-            <Button key="new-session" variant="primary" onPress={() => startNewSession($)}>
+            <Button key="new-session" variant="primary" onPress={() => toggleNewSessionMenu($)}>
               + New Session
             </Button>
           </Box>
+          {newMenu !== null && newSessionPicker(newMenu)}
           {usageRows > 0 && <Text dimColor>{rule}</Text>}
           {usage.limits.map(limit => (
             <Text wrap="truncate-end">

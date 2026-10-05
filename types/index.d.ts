@@ -81,6 +81,12 @@ declare module 'claude-code' {
       searches: Partial<Record<Section, string>>
       detail: DetailLevel
       filters: Partial<Record<Section, KindFilter>>
+      newSession: {
+        defaultModel?: string
+        // each model's saved effort, by its --model alias
+        saved: Record<string, string | undefined>
+        effort?: string
+      } | null
       repos: { selected: string[]; options: RepoOption[] }
       repoSearch: string
     }

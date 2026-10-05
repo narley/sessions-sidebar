@@ -5,6 +5,7 @@ import type { Engine } from 'claude-code/testing'
 const FILES: Record<string, object> = {
   // the effort each model starts at; 'me' runs on Opus
   '/cfg/settings.json': {
+    model: 'opus[1m]',
     effortLevel: 'medium',
     modelSettings: { 'claude-opus-5-5': { effortLevel: 'high' } },
   },
@@ -1207,6 +1208,31 @@ test('a session ended from outside (SIGTERM) does not switch tabs', async ($, on
   expect(commands).toEqual([])
 })
 
+test('New Session asks for the model and effort, each badge as its session would wear it', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  on('session.root', () => ({ value: '/repo/ioi' }))
+  await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
+
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'new-session' })
+  // settings: opus[1m] by default, Opus saved at high, the rest at medium
+  expect(
+    await ui.find({ key: 'new-session-pick-default', text: 'Default · Opus 5.5 1M' }),
+  ).toBeDefined()
+  expect(await ui.findAll({ type: 'Text', text: /^Oh$/ })).toHaveLength(2)
+  expect(await ui.find({ type: 'Text', text: /^Sm$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^saved$/ }))?.props.color).toBe('cyan')
+
+  await ui.press({ key: 'new-session-effort-max' })
+  expect(await ui.find({ type: 'Text', text: /^S\+$/ })).toBeDefined()
+  await ui.press({ key: 'new-session-pick-sonnet' })
+  expect(written.at(-1)?.text).toContain(
+    `claude --dangerously-skip-permissions --model 'sonnet' --effort max"]`,
+  )
+  // it closes once picked
+  expect(await ui.find({ key: 'new-session-cancel' })).toBeUndefined()
+})
+
 test('the new session button opens a Warp tab running claude in the repo', async ($, on) => {
   const commands: string[] = []
   const written: { path: string; text: string }[] = []
@@ -1225,6 +1251,7 @@ test('the new session button opens a Warp tab running claude in the repo', async
 
   const ui = await mountPane($, 'terminal')
   await ui.press({ key: 'new-session' })
+  await ui.press({ key: 'new-session-pick-default' })
 
   expect(written[0]?.text).toContain('directory = "/repo/ioi"')
   expect(written[0]?.text).toContain(
