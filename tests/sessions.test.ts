@@ -48,6 +48,16 @@ const FILES: Record<string, object> = {
     // Remote Control turned off
     bridgeSessionId: null,
   },
+  // launched in ioi, then moved on to work in the fix repo; dead unless a test's ps lists pid 6
+  '/cfg/sessions/6.json': {
+    pid: 6,
+    sessionId: 'wander',
+    cwd: '/repo/ioi',
+    startedAt: 50,
+    kind: 'interactive',
+    name: 'fix-notes',
+    status: 'idle',
+  },
   // named after ticket 2412 while sitting in the repo: shares the 2412 worktree with session 3;
   // dead unless a test's ps lists pid 5
   '/cfg/sessions/5.json': {
@@ -160,6 +170,7 @@ const TRANSCRIPT_TAILS: Record<string, string> = {
   '/cfg/projects/-repo-ioi--claude-worktrees-2412/other.jsonl':
     '{"cwd":"/repo/ioi/.claude/worktrees/2412"}\n{"cwd":"/repo/ioi/.claude/worktrees/2412/packages/api"}\n',
   '/cfg/projects/-repo-ioi/auto.jsonl': '{"cwd":"/repo/ioi"}\n',
+  '/cfg/projects/-repo-ioi/wander.jsonl': '{"cwd":"/repo/ioi"}\n{"cwd":"/repo/fix"}\n',
 }
 
 const WORKTREES = [
@@ -902,6 +913,25 @@ test('a live session with Remote Control on shows rc after its context', async (
   // 'me' and 'other' have it on; 2441-autopilot turned it off
   const marks = await ui.findAll({ type: 'Text', text: /^ {2}rc$/ })
   expect(marks.map(found => found.props.color)).toEqual(['#E06C75', '#E06C75'])
+})
+
+test('a session that moved on to another repo counts under that repo, with its branch', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  await openSidebar($, on, '    1\n    6\n', () => '', written)
+
+  const ui = await mountPane($, 'terminal')
+  // no choice saved: every repo a live session works in
+  expect(await ui.find({ key: 'repos-toggle', text: 'ioi, fix ▾' })).toBeDefined()
+  expect(await ui.find({ key: 'session-6' })).toBeDefined()
+  // fix's main checkout and its branch, though it was launched in ioi
+  expect(await ui.find({ type: 'Text', text: /^fix$/ })).toBeDefined()
+  expect(await ui.findAll({ type: 'Text', text: /^main$/ })).toHaveLength(2)
+
+  // fix unticked: it leaves Live
+  await ui.press({ key: 'repos-toggle' })
+  expect(await ui.find({ key: 'repos-pick-0', text: '■ fix ● 1' })).toBeDefined()
+  await ui.press({ key: 'repos-pick-0' })
+  expect(await ui.find({ key: 'session-6' })).toBeUndefined()
 })
 
 test('closed, ad hoc and finished sessions show what they last saved as their cost', async ($, on) => {

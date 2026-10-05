@@ -642,10 +642,9 @@ const loadSessions = async (
   const live = registered
     .filter(one => !isLivenessKnown || alive.has(one.pid))
     .sort((a, b) => a.startedAt - b.startedAt)
-  const [current, tails, worktreeLists, folders, saved] = await Promise.all([
+  const [current, tails, folders, saved] = await Promise.all([
     $.session.id(),
     Promise.all(live.map(one => tailOf($, configDir, one))),
-    Promise.all([...new Set(live.map(one => one.cwd))].map(cwd => worktreesOf($, cwd))),
     projectFoldersOf($, `${configDir}/projects`),
     $.fs
       .read(reposFileOf(configDir))
@@ -653,6 +652,10 @@ const loadSessions = async (
       .catch(() => undefined),
   ])
   const cwds = live.map((one, index) => currentCwdIn(tails[index] ?? '', one))
+  // where each was launched and where it works now: a session can move on to another repo
+  const worktreeLists = await Promise.all(
+    [...new Set([...live.map(one => one.cwd), ...cwds])].map(cwd => worktreesOf($, cwd)),
+  )
   const ownIndex = live.findIndex(one => one.sessionId === current)
   const ownState = await publishOwnState(
     $,
