@@ -94,6 +94,8 @@ type RegisteredSession = {
   bridgeSessionId?: string | null
   // how it was started: `cli` in a terminal, `sdk-py`/`sdk-ts` when a script drives it
   entrypoint?: string
+  // a background session's (kind `bg`) id, as `claude attach` and `claude stop` take it
+  jobId?: string
 }
 
 type Worktree = { path: string; branch?: string; repo: string; isMain: boolean }
@@ -628,10 +630,10 @@ const loadSessions = async (
       ),
   )
   // a script's headless run (the Agent SDK) registers too, inside its parent's tab: not a session
-  // of its own to list or switch to
+  // of its own to list or switch to; a background one (claude --bg) is, through `claude attach`
   const registered = parsed.filter(
     (one): one is RegisteredSession =>
-      one?.kind === 'interactive' &&
+      (one?.kind === 'interactive' || one?.kind === 'bg') &&
       typeof one.pid === 'number' &&
       !(one.entrypoint ?? 'cli').startsWith('sdk'),
   )
@@ -659,6 +661,40 @@ const loadSessions = async (
       .catch(() => undefined),
   ])
   const cwds = live.map((one, index) => currentCwdIn(tails[index] ?? '', one))
+  // a background session runs no sidebar of its own: its model, effort and cost come from its
+  // transcript, its colour from its job, and the session that started it from that one's
+  // transcript, where `claude --bg` printed `backgrounded · <id>`
+  const background = live.filter(one => one.kind === 'bg')
+  const [launches, jobColors] = await Promise.all([
+    background.length === 0
+      ? ''
+      : $.process
+          .run([
+            'grep',
+            '-o',
+            '-H',
+            '-E',
+            'backgrounded · [0-9a-f]{8}',
+            ...live.filter(one => one.kind !== 'bg').map(one => transcriptOf(configDir, one)),
+          ])
+          .then(found => found.stdout)
+          .catch(() => ''),
+    Promise.all(
+      background.map(one =>
+        $.fs
+          .read(`${configDir}/jobs/${one.jobId}/state.json`)
+          .then(text => (JSON.parse(String(text)) as { color?: string }).color)
+          .catch(() => undefined),
+      ),
+    ),
+  ])
+  const launcherOf = new Map(
+    [...launches.matchAll(/^(.+?):backgrounded · ([0-9a-f]{8})$/gm)].map(match => [
+      match[2],
+      live.find(one => transcriptOf(configDir, one) === match[1])?.pid,
+    ]),
+  )
+  const lastIn = (text: string, pattern: RegExp) => [...text.matchAll(pattern)].at(-1)?.[1]
   // where each was launched and where it works now: a session can move on to another repo
   const worktreeLists = await Promise.all(
     [...new Set([...live.map(one => one.cwd), ...cwds])].map(cwd => worktreesOf($, cwd)),
@@ -714,6 +750,10 @@ const loadSessions = async (
       const tree = trees[index]
       const place = placeOf(tree?.path ?? cwds[index] ?? one.cwd)
 
+      const tail = tails[index] ?? ''
+      const isBackground = one.kind === 'bg'
+      const savedCost = lastIn(tail, /"totalCostUSD":([0-9.eE+-]+)/g)
+
       return {
         pid: one.pid,
         name: one.name ?? place,
@@ -726,11 +766,19 @@ const loadSessions = async (
         // a busy session's own loop is an agent at work too
         agents: (one.status === 'busy' ? 1 : 0) + (states[index]?.running ?? 0),
         isAutopilot: states[index]?.isAutopilot ?? false,
-        model: states[index]?.model,
-        color: states[index]?.color,
-        effort: states[index]?.effort,
-        cost: states[index]?.cost,
+        model: isBackground ? lastIn(tail, /"model":"(claude-[^"]+)"/g) : states[index]?.model,
+        color: isBackground ? jobColors[background.indexOf(one)] : states[index]?.color,
+        effort: isBackground
+          ? lastIn(tail, /"effort":"(low|medium|high|xhigh|max)"/g)
+          : states[index]?.effort,
+        cost: isBackground
+          ? savedCost === undefined
+            ? undefined
+            : Math.round(Number(savedCost) * 100) / 100
+          : states[index]?.cost,
         context: states[index]?.context,
+        jobId: isBackground ? one.jobId : undefined,
+        launchedBy: isBackground && one.jobId !== undefined ? launcherOf.get(one.jobId) : undefined,
         // Remote Control is on; whether a phone has it open is not told to mods
         isRemote: typeof one.bridgeSessionId === 'string',
         isCurrent: one.sessionId === current,
@@ -1155,8 +1203,35 @@ const nextSessionAfter = (list: readonly SessionRow[], pid: number) => {
   )
 }
 
+// a background session has no tab: attach it in a new one, where closing the tab only detaches
+const attachInWarpTab = async ($: EngineInterface, one: SessionRow) =>
+  openWarpTabRunning($, {
+    title: one.name,
+    directory: one.worktree?.path ?? one.repo,
+    command: `CLAUDE_CONFIG_DIR=${shellQuote(await configDirOf($))} claude attach ${one.jobId ?? ''}`,
+  })
+
+const openLiveSession = ($: EngineInterface, one: SessionRow) =>
+  one.jobId === undefined ? focusWarpTab($, one) : attachInWarpTab($, one)
+
+// stops it as `claude stop` does; its transcript stays, `--resume` returns to it
+const stopBackground = async ($: EngineInterface, one: SessionRow) => {
+  const stopped = await $.process
+    .run([
+      'sh',
+      '-c',
+      'CLAUDE_CONFIG_DIR="$1" claude stop "$2"',
+      'stop',
+      await configDirOf($),
+      one.jobId ?? '',
+    ])
+    .catch(() => undefined)
+  if (stopped?.exitCode !== 0) $.ui.toast(`${one.name}: could not stop it`)
+}
+
+// background sessions have no tab to move to
 const focusNextSession = async ($: EngineInterface) => {
-  const list = await read($, rows)
+  const list = (await read($, rows)).filter(one => one.jobId === undefined)
   const current = list.find(one => one.isCurrent)
   const target = current === undefined ? undefined : nextSessionAfter(list, current.pid)
   if (target !== undefined) await focusWarpTab($, target)
@@ -1333,6 +1408,7 @@ const removeWorktreeAndEnd = async (
 
 const CLOSE = 'Close, keep worktree'
 const CLOSE_MAIN = 'Close session'
+const STOP_BACKGROUND = 'Stop session'
 const CLOSE_ALL = 'Close all sessions'
 const REOPEN_ALL = 'Reopen all'
 const FINISH = 'Finish, delete worktree'
@@ -1342,7 +1418,14 @@ const DELETE_CHANGES = 'Delete with changes'
 const CONFIRM_CLOSE_ALL = 'Yes, close all'
 const CONFIRM_ARCHIVE_ALL = 'Yes, archive all'
 // drawn red under the pointer
-const DESTRUCTIVE = [FINISH, DELETE_ANYWAY, DELETE_CHANGES, CONFIRM_CLOSE_ALL, CONFIRM_ARCHIVE_ALL]
+const DESTRUCTIVE = [
+  FINISH,
+  DELETE_ANYWAY,
+  DELETE_CHANGES,
+  CONFIRM_CLOSE_ALL,
+  CONFIRM_ARCHIVE_ALL,
+  STOP_BACKGROUND,
+]
 const RESUME = 'Resume in a new tab'
 const ARCHIVE = 'Archive'
 const UNARCHIVE_TO = (section: string) => `Move back to ${section}`
@@ -1419,14 +1502,24 @@ const finishSession = async ($: EngineInterface, one: SessionRow) => {
 }
 
 const openSessionMenu = ($: EngineInterface, one: SessionRow) =>
-  toggleQuestion(
-    $,
-    liveKey(one),
-    one.status === 'busy' ? 'Busy right now. Close it anyway?' : 'Close this session?',
-    one.worktree === undefined ? [CLOSE_MAIN] : [CLOSE, FINISH],
-  )
+  one.jobId !== undefined
+    ? toggleQuestion(
+        $,
+        liveKey(one),
+        one.status === 'busy'
+          ? 'Busy in the background. Stop it anyway?'
+          : 'Stop this background session?',
+        [STOP_BACKGROUND],
+      )
+    : toggleQuestion(
+        $,
+        liveKey(one),
+        one.status === 'busy' ? 'Busy right now. Close it anyway?' : 'Close this session?',
+        one.worktree === undefined ? [CLOSE_MAIN] : [CLOSE, FINISH],
+      )
 
 const answerSessionQuestion = async ($: EngineInterface, one: SessionRow, choice: string) => {
+  if (choice === STOP_BACKGROUND) return stopBackground($, one)
   if (choice === CLOSE || choice === CLOSE_MAIN) return endSession($, one)
   if (choice === FINISH) return finishSession($, one)
   if (choice === DELETE_ANYWAY) return removeWorktreeIfClean($, one)
@@ -1881,6 +1974,12 @@ export const register: Register = on => {
           )}
           <Box flexDirection="row">
             {marker(one)}
+            {one.jobId !== undefined && (
+              // a background session, under the one that started it
+              <Box flexShrink={0}>
+                <Text dimColor>↳ </Text>
+              </Box>
+            )}
             <Box flexShrink={0}>
               <Text color={statusColor(one.status)}>{`${statusGlyph(one.status)} `}</Text>
             </Box>
@@ -1908,7 +2007,7 @@ export const register: Register = on => {
                   key={`session-${one.pid}`}
                   plain
                   hover={{ scope: `session-${one.pid}`, bold: true }}
-                  onPress={() => focusWarpTab($, one)}
+                  onPress={() => openLiveSession($, one)}
                 >
                   {one.name}
                 </Button>
@@ -2078,7 +2177,19 @@ export const register: Register = on => {
     const inRepos = allLive.filter(one => repos.selected.includes(one.repo))
     // then the kind: a linked worktree, or the main checkout; Close all takes what is left
     const list = inRepos.filter(one => keeps('live', one.worktree !== undefined))
-    const shownLive = list.filter(one => holds(searches.live ?? '', liveTexts(one)))
+    // each background session right under the one that started it; any whose starter is not
+    // listed comes last
+    const tops = list.filter(one => one.jobId === undefined)
+    const nested = [
+      ...tops.flatMap(top => [
+        top,
+        ...list.filter(one => one.jobId !== undefined && one.launchedBy === top.pid),
+      ]),
+      ...list.filter(
+        one => one.jobId !== undefined && !tops.some(top => top.pid === one.launchedBy),
+      ),
+    ]
+    const shownLive = nested.filter(one => holds(searches.live ?? '', liveTexts(one)))
     const shownDormant = dormant.filter(one => holds(searches.dormant ?? '', placeTexts(one)))
     // Done: sessions whose worktree is gone, and the ad hoc ones archived from Closed; newest first,
     // the last week listed and the rest under its own older menu
@@ -2096,7 +2207,7 @@ export const register: Register = on => {
       if (archived.includes(one.sessionId)) await setArchived($, [one.sessionId], false)
       await resumeClosedSession($, one)
     }
-    const busyCount = list.filter(one => one.status === 'busy').length
+    const busyCount = tops.filter(one => one.status === 'busy').length
     const resumeOrArchive = (one: ClosedRow) => ({
       text: 'Resume it, or archive it to Done?',
       options: [RESUME, ARCHIVE],
@@ -2394,14 +2505,15 @@ export const register: Register = on => {
         title: 'Live',
         count: list.length,
         matched: shownLive.length,
-        openFirst: firstOf(list, liveTexts, one => focusWarpTab($, one)),
+        openFirst: firstOf(nested, liveTexts, one => openLiveSession($, one)),
         choices: kindChoices('live', {
           worktrees: inRepos.filter(one => one.worktree !== undefined).length,
           adhoc: inRepos.filter(one => one.worktree === undefined).length,
         }),
         // the other two levels to switch to, then Close all
         menu: {
-          text: `Showing ${level} detail. Close all ${list.length} live sessions, keeping their worktrees?${
+          // background sessions are left running: their ≡ stops them one by one
+          text: `Showing ${level} detail. Close all ${tops.length} live sessions, keeping their worktrees?${
             busyCount === 0 ? '' : ` ${busyCount} ${busyCount === 1 ? 'is' : 'are'} busy.`
           }`,
           options: [
@@ -2413,13 +2525,13 @@ export const register: Register = on => {
               return ask(
                 $,
                 'heading-live',
-                `Really close all ${list.length}${
-                  list.some(one => one.isCurrent) ? ', this one too' : ''
+                `Really close all ${tops.length}${
+                  tops.some(one => one.isCurrent) ? ', this one too' : ''
                 }? Their worktrees stay.`,
                 [CONFIRM_CLOSE_ALL],
               )
             }
-            if (choice === CONFIRM_CLOSE_ALL) return closeAllSessions($, list)
+            if (choice === CONFIRM_CLOSE_ALL) return closeAllSessions($, tops)
             const chosen = DETAIL_LEVELS.find(other => choice === `Show ${other}`)
 
             return chosen === undefined ? Promise.resolve() : setDetailLevel($, chosen)

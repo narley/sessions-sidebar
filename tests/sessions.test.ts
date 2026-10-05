@@ -48,6 +48,21 @@ const FILES: Record<string, object> = {
     // Remote Control turned off
     bridgeSessionId: null,
   },
+  // a background session (claude --bg) that session 3 started; dead unless a test's ps lists pid 8
+  '/cfg/sessions/8.json': {
+    pid: 8,
+    sessionId: 'bgjob',
+    cwd: '/repo/ioi',
+    startedAt: 70,
+    kind: 'bg',
+    entrypoint: 'cli',
+    jobId: 'ab12cd34',
+    name: 'probe-2412',
+    status: 'busy',
+    bridgeSessionId: 'session_bg',
+  },
+  // its job, as the background daemon keeps it
+  '/cfg/jobs/ab12cd34/state.json': { color: 'green' },
   // a script's headless run inside session 3's tab, through the Agent SDK; never listed
   '/cfg/sessions/7.json': {
     pid: 7,
@@ -182,6 +197,9 @@ const TRANSCRIPT_TAILS: Record<string, string> = {
     '{"cwd":"/repo/ioi/.claude/worktrees/2412"}\n{"cwd":"/repo/ioi/.claude/worktrees/2412/packages/api"}\n',
   '/cfg/projects/-repo-ioi/auto.jsonl': '{"cwd":"/repo/ioi"}\n',
   '/cfg/projects/-repo-ioi/wander.jsonl': '{"cwd":"/repo/ioi"}\n{"cwd":"/repo/fix"}\n',
+  // a background session runs no sidebar: what it is and costs comes from here
+  '/cfg/projects/-repo-ioi/bgjob.jsonl':
+    '{"cwd":"/repo/ioi"}\n{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001"},"effort":"low"}\n{"type":"cost-state","totalCostUSD":0.057}\n',
 }
 
 const WORKTREES = [
@@ -288,6 +306,12 @@ const openSidebar = async (
       if (at.startsWith('/repo/ioi')) return ran(WORKTREES)
 
       return { value: { ...ran('').value, exitCode: 128 } }
+    }
+    // the line `claude --bg` printed in the transcript of the session that ran it
+    if (command === 'grep' && rest.some(arg => arg.includes('backgrounded'))) {
+      return ran(
+        '/cfg/projects/-repo-ioi--claude-worktrees-2412/other.jsonl:backgrounded · ab12cd34',
+      )
     }
     if (command === 'grep' && rest.includes('"cwd":"[^"]*"')) {
       return ran(
@@ -1069,6 +1093,47 @@ test('≡ on the Closed heading reopens every closed session, one tab at a time'
   expect(opened).toHaveLength(tabs.length)
   // each tab its own worktree
   expect(new Set(tabs.map(tab => /directory = "(.+)"/.exec(tab.text)?.[1])).size).toBe(tabs.length)
+})
+
+test('a background session sits under the one that started it; a click attaches it in a new tab', async ($, on) => {
+  const commands: string[] = []
+  const written: { path: string; text: string }[] = []
+  await openSidebar(
+    $,
+    on,
+    '    1\n    3\n    8\n',
+    argv => {
+      commands.push(argv.join(' '))
+
+      return ''
+    },
+    written,
+  )
+
+  const ui = await mountPane($, 'terminal')
+  // right after session 3, which ran claude --bg; 'me' (current) is a Text, not a Button
+  expect(
+    (await ui.findAll({ type: 'Button', text: /^(worktree 2412|probe-2412)$/ })).map(
+      found => found.key,
+    ),
+  ).toEqual(['session-3', 'session-8'])
+  expect(await ui.find({ type: 'Text', text: /^↳ $/ })).toBeDefined()
+  // Haiku at low on its job's colour, its cost from its transcript
+  expect((await ui.find({ type: 'Text', text: /^Hl$/ }))?.props.backgroundColor).toBe(
+    'green_FOR_SUBAGENTS_ONLY',
+  )
+  expect(await ui.find({ type: 'Text', text: /^0\.06 spent$/ })).toBeDefined()
+
+  // no tab of its own: a new one attaches it
+  await ui.press({ key: 'session-8' })
+  expect(written.at(-1)?.text).toContain(`CLAUDE_CONFIG_DIR='/cfg' claude attach ab12cd34"]`)
+
+  // its ≡ stops it; Close all leaves it running
+  await ui.press({ key: 'menu-8' })
+  await ui.press({ key: 'answer-live-8-0' })
+  expect(commands).toContain('sh -c CLAUDE_CONFIG_DIR="$1" claude stop "$2" stop /cfg ab12cd34')
+  await ui.press({ key: 'heading-live-menu' })
+  expect(await ui.find({ type: 'Text', text: /Close all 2 live sessions/ })).toBeDefined()
 })
 
 test('leaves out a script’s headless run, which has no tab of its own', async ($, on) => {

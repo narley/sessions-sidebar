@@ -22,6 +22,10 @@ export type SessionRow = {
   context?: { percent: number; window: number }
   // Remote Control is on
   isRemote: boolean
+  // a background session's (claude --bg) id; it has no tab, `claude attach` opens it
+  jobId?: string
+  // the live session that started it, by pid, when its transcript shows the launch
+  launchedBy?: number
   isCurrent: boolean
 }
 
