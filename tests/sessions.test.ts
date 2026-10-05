@@ -48,6 +48,17 @@ const FILES: Record<string, object> = {
     // Remote Control turned off
     bridgeSessionId: null,
   },
+  // a script's headless run inside session 3's tab, through the Agent SDK; never listed
+  '/cfg/sessions/7.json': {
+    pid: 7,
+    sessionId: 'scripted',
+    cwd: '/repo/ioi/.claude/worktrees/2412',
+    startedAt: 60,
+    kind: 'interactive',
+    entrypoint: 'sdk-py',
+    name: '2412-9b',
+    status: 'busy',
+  },
   // launched in ioi, then moved on to work in the fix repo; dead unless a test's ps lists pid 6
   '/cfg/sessions/6.json': {
     pid: 6,
@@ -1058,6 +1069,15 @@ test('≡ on the Closed heading reopens every closed session, one tab at a time'
   expect(opened).toHaveLength(tabs.length)
   // each tab its own worktree
   expect(new Set(tabs.map(tab => /directory = "(.+)"/.exec(tab.text)?.[1])).size).toBe(tabs.length)
+})
+
+test('leaves out a script’s headless run, which has no tab of its own', async ($, on) => {
+  await openSidebar($, on, '    1\n    3\n    7\n')
+
+  const ui = await mountPane($, 'terminal')
+  expect(await ui.find({ key: 'session-3' })).toBeDefined()
+  expect(await ui.find({ key: 'session-7' })).toBeUndefined()
+  expect(await ui.find({ text: /2412-9b/ })).toBeUndefined()
 })
 
 test('keeps every session when ps sees nothing', async ($, on) => {

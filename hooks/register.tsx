@@ -92,6 +92,8 @@ type RegisteredSession = {
   status?: string
   // set while Remote Control is on, null once it is turned off
   bridgeSessionId?: string | null
+  // how it was started: `cli` in a terminal, `sdk-py`/`sdk-ts` when a script drives it
+  entrypoint?: string
 }
 
 type Worktree = { path: string; branch?: string; repo: string; isMain: boolean }
@@ -625,8 +627,13 @@ const loadSessions = async (
           .catch(() => undefined),
       ),
   )
+  // a script's headless run (the Agent SDK) registers too, inside its parent's tab: not a session
+  // of its own to list or switch to
   const registered = parsed.filter(
-    (one): one is RegisteredSession => one?.kind === 'interactive' && typeof one.pid === 'number',
+    (one): one is RegisteredSession =>
+      one?.kind === 'interactive' &&
+      typeof one.pid === 'number' &&
+      !(one.entrypoint ?? 'cli').startsWith('sdk'),
   )
   if (registered.length === 0) {
     return { live: [], dormant: [], closed: [], checkout: [], repos: { selected: [], options: [] } }
