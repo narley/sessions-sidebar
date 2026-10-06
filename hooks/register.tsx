@@ -237,6 +237,55 @@ const projectFoldersOf = async ($: EngineInterface, projects: string) => {
   })
 }
 
+// which session started each background one, as that session recorded it the moment its shell ran
+// `claude --bg`: { <job id>: <session id> }, shared by every sidebar
+const launchesFileOf = (configDir: string) => `${configDir}/sessions-sidebar/launches.json`
+
+// after one of this session's shell commands: the background sessions it started are those whose
+// id its output shows, or, when it ran `claude --bg` and printed none, those registered while it ran
+const recordLaunches = async (
+  $: EngineInterface,
+  { since, command, stdout }: { since: number; command: string; stdout: string },
+) => {
+  const configDir = await configDirOf($)
+  const dir = `${configDir}/sessions`
+  const until = await $.clock.now()
+  const jobs = (
+    await Promise.all(
+      (await $.fs.list(dir).catch(() => []))
+        .filter(entry => entry.name.endsWith('.json'))
+        .map(entry =>
+          $.fs
+            .read(`${dir}/${entry.name}`)
+            .then(text => JSON.parse(String(text)) as RegisteredSession)
+            .catch(() => undefined),
+        ),
+    )
+  ).flatMap(one => (one?.kind === 'bg' && one.jobId !== undefined ? [one] : []))
+  const shown = jobs.filter(one => one.jobId !== undefined && stdout.includes(one.jobId))
+  const started =
+    shown.length > 0 || !/--(bg|background)\b/.test(command)
+      ? shown
+      : jobs.filter(one => one.startedAt >= since - 1000 && one.startedAt <= until + 1000)
+  if (started.length === 0) return
+
+  const own = await $.session.id()
+  const saved: unknown = await $.fs
+    .read(launchesFileOf(configDir))
+    .then(text => JSON.parse(String(text)) as unknown)
+    .catch(() => ({}))
+  // only the jobs still registered are kept, so the file stays small
+  const kept = Object.fromEntries(
+    Object.entries(typeof saved === 'object' && saved !== null ? saved : {}).filter(([id]) =>
+      jobs.some(one => one.jobId === id),
+    ),
+  )
+  await $.fs.write(
+    launchesFileOf(configDir),
+    JSON.stringify({ ...kept, ...Object.fromEntries(started.map(one => [one.jobId, own])) }),
+  )
+}
+
 // which transcript started each background session: what `claude --bg` prints varies (`backgrounded ·
 // <id>`, or `<id> <name> busy …`), so it is whichever live transcript holds the id; at launch only
 // the launcher knows it, and if more do by the time this looks, the one that wrote it first. Found
@@ -715,7 +764,7 @@ const loadSessions = async (
   // a background session runs no sidebar of its own: its model, effort and cost come from its
   // transcript, its colour from its job, and the session that started it from the transcripts
   const background = live.filter(one => one.kind === 'bg')
-  const [jobColors] = await Promise.all([
+  const [jobColors, launches] = await Promise.all([
     Promise.all(
       background.map(one =>
         $.fs
@@ -724,16 +773,29 @@ const loadSessions = async (
           .catch(() => undefined),
       ),
     ),
-    findLaunchers(
-      $,
-      background.flatMap(one => (one.jobId === undefined ? [] : [one.jobId])),
-      live.filter(one => one.kind !== 'bg').map(one => transcriptOf(configDir, one)),
-    ),
+    background.length === 0
+      ? Promise.resolve<Record<string, string>>({})
+      : $.fs
+          .read(launchesFileOf(configDir))
+          .then(text => JSON.parse(String(text)) as Record<string, string>)
+          .catch((): Record<string, string> => ({})),
   ])
+  // workers started some other way (a script that runs claude --bg) are looked for in transcripts
+  await findLaunchers(
+    $,
+    background.flatMap(one =>
+      one.jobId === undefined || launches[one.jobId] !== undefined ? [] : [one.jobId],
+    ),
+    live.filter(one => one.kind !== 'bg').map(one => transcriptOf(configDir, one)),
+  )
   const launcherOf = (jobId: string | undefined) =>
-    live.find(
-      one => jobId !== undefined && transcriptOf(configDir, one) === launcherOfJob.get(jobId),
-    )?.pid
+    jobId === undefined
+      ? undefined
+      : live.find(one =>
+          launches[jobId] !== undefined
+            ? one.sessionId === launches[jobId]
+            : transcriptOf(configDir, one) === launcherOfJob.get(jobId),
+        )?.pid
   const lastIn = (text: string, pattern: RegExp) => [...text.matchAll(pattern)].at(-1)?.[1]
   // where each was launched and where it works now: a session can move on to another repo
   const worktreeLists = await Promise.all(
@@ -1674,6 +1736,26 @@ export const register: Register = on => {
   })
 
   // /exit, ctrl+c, ctrl+d; a close from the sidebar ends as `other` and has already moved on
+  // a background session this one starts is recorded by this one, so it always nests under it
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const since = await $.clock.now()
+    const result = await next(e)
+    const command = typeof e.command === 'string' ? e.command : ''
+    const stdout =
+      result.result !== undefined &&
+      typeof result.result === 'object' &&
+      result.result !== null &&
+      'stdout' in result.result &&
+      typeof result.result.stdout === 'string'
+        ? result.result.stdout
+        : ''
+    if (/\bclaude\b/.test(command) || /\b[0-9a-f]{8}\b/.test(stdout)) {
+      void recordLaunches($, { since, command, stdout }).catch(() => undefined)
+    }
+
+    return result
+  })
+
   on('session.end', async ($, e, next) => {
     if (e.reason === 'prompt_input_exit') await focusNextSession($).catch(() => undefined)
 

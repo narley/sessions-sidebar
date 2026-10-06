@@ -1134,6 +1134,45 @@ test('a background session sits under the one that started it; a click attaches 
   expect(await ui.find({ type: 'Text', text: /Close all 2 live sessions/ })).toBeDefined()
 })
 
+test('a session records the background sessions its shell starts, so they always nest under it', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  // the shell's answer, in the format with no `backgrounded` line
+  on('tool.call', () => ({
+    result: { stdout: 'ab12cd34 probe-2412 busy working', stderr: '', interrupted: false },
+  }))
+  const clock = await openSidebar($, on, '    1\n    3\n    8\n', () => '', written)
+
+  await $.tool.call({
+    tool: 'Bash',
+    command: "claude --bg --name probe-2412 'look around' | head -1",
+  })
+  for (let i = 0; i < 50 && !written.some(one => one.path.endsWith('/launches.json')); i += 1) {
+    await clock.advance(1)
+  }
+  expect(written).toContainEqual({
+    path: '/cfg/sessions-sidebar/launches.json',
+    text: '{"ab12cd34":"me"}',
+  })
+
+  // under 'me', which recorded it, though session 3's transcript holds its id too
+  // closed and opened again, the sidebar refreshes
+  const toggle = () =>
+    $.command.run({
+      command: 'sessions-sidebar',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 200 },
+    })
+  await toggle()
+  await toggle()
+  const ui = await mountPane($, 'terminal')
+  expect(
+    (await ui.findAll({ type: 'Box' })).flatMap(found =>
+      /^row-\d+$/.test(String(found.key)) ? [found.key] : [],
+    ),
+  ).toEqual(['row-3', 'row-1', 'row-8'])
+})
+
 test('leaves out a script’s headless run, which has no tab of its own', async ($, on) => {
   await openSidebar($, on, '    1\n    3\n    7\n')
 
