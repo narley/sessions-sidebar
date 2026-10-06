@@ -300,6 +300,7 @@ const openSidebar = async (
   on('process.run', (_$, e) => {
     const [command, ...rest] = e.argv
     if (command === 'ps' && rest[0] === '-o') return ran(psStdout)
+    if (command === 'date' && rest[1] === '1273600') return ran('Thu 5:46 PM\n')
     if (command === 'git' && rest.includes('worktree')) {
       const at = rest[rest.indexOf('-C') + 1] ?? ''
       if (at === '/repo/fix') return ran(FIX_WORKTREES)
@@ -801,7 +802,8 @@ test('above New Session: the 5h and 7d windows and how long this prompt cache st
   expect(await ui.find({ type: 'Text', text: '━━━━━━━━' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '╺━' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '  81%' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '  resets 3d 4h' })).toBeDefined()
+  // days away, so its weekday and local time
+  expect(await ui.find({ type: 'Text', text: '  resets Thu 5:46 PM' })).toBeDefined()
   // 1h cache, last response 22 minutes ago
   expect(await ui.find({ type: 'Text', text: '● warm, 38m left' })).toBeDefined()
 })

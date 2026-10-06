@@ -980,6 +980,24 @@ const durationText = (ms: number) => {
   return days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`
 }
 
+// the 7d window resets days away, so its weekday and time beat a countdown; `date` formats it in the
+// local zone like the status line does, once per reset
+const weekdayTimeOf = new Map<string, Promise<string | undefined>>()
+
+const weekdayTime = ($: EngineInterface, resetsAt: string) => {
+  const known = weekdayTimeOf.get(resetsAt)
+  if (known !== undefined) return known
+
+  const seconds = String(Math.floor(Date.parse(resetsAt) / 1000))
+  const formatted = $.process
+    .run(['date', '-r', seconds, '+%a %-I:%M %p'])
+    .then(ran => (ran.exitCode === 0 && ran.stdout.trim() !== '' ? ran.stdout.trim() : undefined))
+    .catch(() => undefined)
+  weekdayTimeOf.set(resetsAt, formatted)
+
+  return formatted
+}
+
 const refresh = async ($: EngineInterface) => {
   const configDir = await configDirOf($)
   const [
@@ -1025,21 +1043,28 @@ const refresh = async ($: EngineInterface) => {
     $.clock.now(),
   ])
   const info = {
-    limits: (usage?.rateLimits ?? []).flatMap(limit => {
-      const label = { five_hour: '5h', seven_day: '7d' }[limit.kind]
-      if (label === undefined) return []
+    limits: await Promise.all(
+      (usage?.rateLimits ?? []).flatMap(limit => {
+        const label = { five_hour: '5h', seven_day: '7d' }[limit.kind]
+        if (label === undefined) return []
 
-      return [
-        {
-          label,
-          percent: Math.round(limit.percentUsed),
-          resetsIn:
-            limit.resetsAt === undefined
-              ? undefined
-              : durationText(Date.parse(limit.resetsAt) - now),
-        },
-      ]
-    }),
+        const { resetsAt } = limit
+        const resetsIn =
+          resetsAt === undefined
+            ? Promise.resolve(undefined)
+            : label === '7d'
+              ? weekdayTime($, resetsAt)
+              : Promise.resolve(durationText(Date.parse(resetsAt) - now))
+
+        return [
+          resetsIn.then(text => ({
+            label,
+            percent: Math.round(limit.percentUsed),
+            resetsIn: text,
+          })),
+        ]
+      }),
+    ),
     cache:
       cacheExpiresAt === undefined
         ? undefined
