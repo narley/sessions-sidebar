@@ -990,7 +990,7 @@ const weekdayTime = ($: EngineInterface, resetsAt: string) => {
 
   const seconds = String(Math.floor(Date.parse(resetsAt) / 1000))
   const formatted = $.process
-    .run(['date', '-r', seconds, '+%a %-I:%M %p'])
+    .run(['date', '-r', seconds, '+%a %H:%M'])
     .then(ran => (ran.exitCode === 0 && ran.stdout.trim() !== '' ? ran.stdout.trim() : undefined))
     .catch(() => undefined)
   weekdayTimeOf.set(resetsAt, formatted)
