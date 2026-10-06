@@ -307,11 +307,9 @@ const openSidebar = async (
 
       return { value: { ...ran('').value, exitCode: 128 } }
     }
-    // the line `claude --bg` printed in the transcript of the session that ran it
-    if (command === 'grep' && rest.some(arg => arg.includes('backgrounded'))) {
-      return ran(
-        '/cfg/projects/-repo-ioi--claude-worktrees-2412/other.jsonl:backgrounded · ab12cd34',
-      )
+    // the background session's id, which only the transcript of the session that ran it holds
+    if (command === 'grep' && rest.includes('-F') && rest.includes('ab12cd34')) {
+      return ran('/cfg/projects/-repo-ioi--claude-worktrees-2412/other.jsonl:ab12cd34')
     }
     if (command === 'grep' && rest.includes('"cwd":"[^"]*"')) {
       return ran(

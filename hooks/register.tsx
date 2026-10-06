@@ -237,6 +237,56 @@ const projectFoldersOf = async ($: EngineInterface, projects: string) => {
   })
 }
 
+// which transcript started each background session: what `claude --bg` prints varies (`backgrounded ·
+// <id>`, or `<id> <name> busy …`), so it is whichever live transcript holds the id; at launch only
+// the launcher knows it, and if more do by the time this looks, the one that wrote it first. Found
+// once per id; one not found yet is looked for again
+const launcherOfJob = new Map<string, string>()
+
+const findLaunchers = async (
+  $: EngineInterface,
+  jobIds: readonly string[],
+  transcripts: readonly string[],
+) => {
+  const unknown = jobIds.filter(id => !launcherOfJob.has(id))
+  if (unknown.length === 0 || transcripts.length === 0) return
+
+  const found =
+    (
+      await $.process
+        .run(['grep', '-o', '-H', '-F', ...unknown.flatMap(id => ['-e', id]), ...transcripts])
+        .catch(() => undefined)
+    )?.stdout ?? ''
+  const holders = [...found.matchAll(/^(.+):([0-9a-f]{8})$/gm)]
+  await Promise.all(
+    unknown.map(async id => {
+      const files = [
+        ...new Set(
+          holders.flatMap(match => (match[2] === id && match[1] !== undefined ? [match[1]] : [])),
+        ),
+      ]
+      const first =
+        files.length < 2
+          ? files[0]
+          : (
+              await Promise.all(
+                files.map(async file => {
+                  const line =
+                    (
+                      await $.process
+                        .run(['grep', '-m', '1', '-F', id, file])
+                        .catch(() => undefined)
+                    )?.stdout ?? ''
+
+                  return { file, at: /"timestamp":"([^"]+)"/.exec(line)?.[1] ?? '~' }
+                }),
+              )
+            ).sort((a, b) => a.at.localeCompare(b.at))[0]?.file
+      if (first !== undefined) launcherOfJob.set(id, first)
+    }),
+  )
+}
+
 // a session belongs to the linked worktree it works inside, else the one in its repo named after
 // its ticket (sessions often sit in the repo while working on a worktree), else the main checkout
 const worktreeOf = (cwd: string, name: string | undefined, worktrees: readonly Worktree[]) => {
@@ -663,23 +713,9 @@ const loadSessions = async (
   ])
   const cwds = live.map((one, index) => currentCwdIn(tails[index] ?? '', one))
   // a background session runs no sidebar of its own: its model, effort and cost come from its
-  // transcript, its colour from its job, and the session that started it from that one's
-  // transcript, where `claude --bg` printed `backgrounded · <id>`
+  // transcript, its colour from its job, and the session that started it from the transcripts
   const background = live.filter(one => one.kind === 'bg')
-  const [launches, jobColors] = await Promise.all([
-    background.length === 0
-      ? ''
-      : $.process
-          .run([
-            'grep',
-            '-o',
-            '-H',
-            '-E',
-            'backgrounded · [0-9a-f]{8}',
-            ...live.filter(one => one.kind !== 'bg').map(one => transcriptOf(configDir, one)),
-          ])
-          .then(found => found.stdout)
-          .catch(() => ''),
+  const [jobColors] = await Promise.all([
     Promise.all(
       background.map(one =>
         $.fs
@@ -688,13 +724,16 @@ const loadSessions = async (
           .catch(() => undefined),
       ),
     ),
+    findLaunchers(
+      $,
+      background.flatMap(one => (one.jobId === undefined ? [] : [one.jobId])),
+      live.filter(one => one.kind !== 'bg').map(one => transcriptOf(configDir, one)),
+    ),
   ])
-  const launcherOf = new Map(
-    [...launches.matchAll(/^(.+?):backgrounded · ([0-9a-f]{8})$/gm)].map(match => [
-      match[2],
-      live.find(one => transcriptOf(configDir, one) === match[1])?.pid,
-    ]),
-  )
+  const launcherOf = (jobId: string | undefined) =>
+    live.find(
+      one => jobId !== undefined && transcriptOf(configDir, one) === launcherOfJob.get(jobId),
+    )?.pid
   const lastIn = (text: string, pattern: RegExp) => [...text.matchAll(pattern)].at(-1)?.[1]
   // where each was launched and where it works now: a session can move on to another repo
   const worktreeLists = await Promise.all(
@@ -779,7 +818,7 @@ const loadSessions = async (
           : states[index]?.cost,
         context: states[index]?.context,
         jobId: isBackground ? one.jobId : undefined,
-        launchedBy: isBackground && one.jobId !== undefined ? launcherOf.get(one.jobId) : undefined,
+        launchedBy: isBackground ? launcherOf(one.jobId) : undefined,
         // Remote Control is on; whether a phone has it open is not told to mods
         isRemote: typeof one.bridgeSessionId === 'string',
         isCurrent: one.sessionId === current,
@@ -1976,9 +2015,9 @@ export const register: Register = on => {
           <Box flexDirection="row">
             {marker(one)}
             {one.jobId !== undefined && (
-              // a background session, under the one that started it
+              // a background session: ↳ under the one that started it, else marked bg
               <Box flexShrink={0}>
-                <Text dimColor>↳ </Text>
+                <Text dimColor>{tops.some(top => top.pid === one.launchedBy) ? '↳ ' : 'bg '}</Text>
               </Box>
             )}
             <Box flexShrink={0}>
