@@ -1278,14 +1278,17 @@ const resumeClosedSession = async ($: EngineInterface, one: ClosedRow) => {
   })
 }
 
-// the new session's own sidebar gives it a random colour
+// the new session's own sidebar gives it a random colour; it starts in the repo's main checkout, as
+// this session's root may be a worktree it moved into, which the new one would then claim too
 const startNewSession = async (
   $: EngineInterface,
   { model, effort }: { model?: string; effort?: string },
-) =>
-  openWarpTabRunning($, {
+) => {
+  const root = await $.session.root()
+
+  return openWarpTabRunning($, {
     title: 'New session',
-    directory: await $.session.root(),
+    directory: (await repoOf($, root)) ?? root,
     command: `SESSIONS_SIDEBAR_COLOR=random ${claudeCommand(
       await configDirOf($),
       `${model === undefined ? '' : ` --model ${shellQuote(model)}`}${
@@ -1293,6 +1296,7 @@ const startNewSession = async (
       }`,
     )}`,
   })
+}
 
 // a second press folds it; the settings are read as it opens, so the badges show the saved efforts
 const toggleNewSessionMenu = async ($: EngineInterface) => {

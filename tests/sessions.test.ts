@@ -1360,7 +1360,8 @@ test('New Session asks for the model and effort, each badge as its session would
 test('the new session button opens a Warp tab running claude in the repo', async ($, on) => {
   const commands: string[] = []
   const written: { path: string; text: string }[] = []
-  on('session.root', () => ({ value: '/repo/ioi' }))
+  // this session moved into a worktree: the new one still starts in the main checkout
+  on('session.root', () => ({ value: '/repo/ioi/.claude/worktrees/2412' }))
   await openSidebar(
     $,
     on,
