@@ -1119,11 +1119,14 @@ const refresh = async ($: EngineInterface) => {
 
 // Warp puts WARP_FOCUS_URL (warp://session/<uuid>, warppreview:// on Preview) in each tab's env;
 // the claude process inherits it, and opening it brings that tab to the front
+const focusUrlOf = async ($: EngineInterface, pid: number) => {
+  const ps = await $.process.run(['ps', '-E', '-ww', '-o', 'command=', '-p', String(pid)])
+
+  return /(?:^|\s)WARP_FOCUS_URL=(warp[a-z]*:\/\/session\/[0-9a-f]+)(?:\s|$)/.exec(ps.stdout)?.[1]
+}
+
 const focusWarpTab = async ($: EngineInterface, one: SessionRow) => {
-  const ps = await $.process.run(['ps', '-E', '-ww', '-o', 'command=', '-p', String(one.pid)])
-  const url = /(?:^|\s)WARP_FOCUS_URL=(warp[a-z]*:\/\/session\/[0-9a-f]+)(?:\s|$)/.exec(
-    ps.stdout,
-  )?.[1]
+  const url = await focusUrlOf($, one.pid)
   if (url === undefined) {
     $.ui.toast(`${one.name}: not running in a Warp tab`)
 
@@ -1347,13 +1350,31 @@ const nextSessionAfter = (list: readonly SessionRow[], pid: number) => {
   )
 }
 
-// a background session has no tab: attach it in a new one, where closing the tab only detaches
-const attachInWarpTab = async ($: EngineInterface, one: SessionRow) =>
-  openWarpTabRunning($, {
+// a background session has no tab of its own: the tab already attached to it, else a new one, where
+// closing the tab only detaches
+const attachInWarpTab = async ($: EngineInterface, one: SessionRow) => {
+  const listed = await $.process
+    .run(['ps', '-A', '-ww', '-o', 'pid=,command='])
+    .catch(() => undefined)
+  const attached = [
+    ...(listed?.stdout ?? '').matchAll(/^\s*(\d+)\s+\S*claude\s+attach\s+([0-9a-f]+)(?:\s|$)/gm),
+  ].flatMap(match => (match[2] === one.jobId ? [Number(match[1])] : []))
+  for (const pid of attached) {
+    const url = await focusUrlOf($, pid).catch(() => undefined)
+    if (url !== undefined) {
+      const opened = await $.process.run(['open', url])
+      if (opened.exitCode !== 0) $.ui.toast(`${one.name}: could not open its Warp tab`)
+
+      return
+    }
+  }
+
+  await openWarpTabRunning($, {
     title: one.name,
     directory: one.worktree?.path ?? one.repo,
     command: `CLAUDE_CONFIG_DIR=${shellQuote(await configDirOf($))} claude attach ${one.jobId ?? ''}`,
   })
+}
 
 const openLiveSession = ($: EngineInterface, one: SessionRow) =>
   one.jobId === undefined ? focusWarpTab($, one) : attachInWarpTab($, one)

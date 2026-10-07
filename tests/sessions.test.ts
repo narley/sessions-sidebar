@@ -1098,14 +1098,20 @@ test('≡ on the Closed heading reopens every closed session, one tab at a time'
 test('a background session sits under the one that started it; a click attaches it in a new tab', async ($, on) => {
   const commands: string[] = []
   const written: { path: string; text: string }[] = []
+  let isAttached = false
   await openSidebar(
     $,
     on,
     '    1\n    3\n    8\n',
     argv => {
       commands.push(argv.join(' '))
+      // once attached: its tab's claude, beside another job's
+      if (!isAttached || argv[0] !== 'ps') return ''
+      if (argv[1] === '-A') return '   90 claude attach ab12cd99\n   91 claude attach ab12cd34\n'
 
-      return ''
+      return argv.at(-1) === '91'
+        ? 'claude attach ab12cd34 WARP_FOCUS_URL=warppreview://session/abc9\n'
+        : ''
     },
     written,
   )
@@ -1127,6 +1133,12 @@ test('a background session sits under the one that started it; a click attaches 
   // no tab of its own: a new one attaches it
   await ui.press({ key: 'session-8' })
   expect(written.at(-1)?.text).toContain(`CLAUDE_CONFIG_DIR='/cfg' claude attach ab12cd34"]`)
+  // a second click goes back to that tab rather than opening another
+  isAttached = true
+  const tabs = written.length
+  await ui.press({ key: 'session-8' })
+  expect(commands.at(-1)).toBe('open warppreview://session/abc9')
+  expect(written).toHaveLength(tabs)
 
   // its ≡ stops it; Close all leaves it running
   await ui.press({ key: 'menu-8' })
