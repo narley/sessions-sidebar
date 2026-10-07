@@ -680,6 +680,55 @@ test('≡ Finish on a merged session closes it, its worktree removed once it has
   expect(commands[6]).toEqual(['kill', '-TERM', '3'])
 })
 
+test('≡ Finish on a background session stops it, its worktree removed once it has exited', async ($, on) => {
+  const commands: (readonly string[])[] = []
+  // the worker runs in the 2418 worktree
+  const written = [
+    {
+      path: '/cfg/sessions/8.json',
+      text: JSON.stringify({
+        pid: 8,
+        sessionId: 'bgjob',
+        cwd: '/repo/ioi/.claude/worktrees/2418',
+        startedAt: 70,
+        kind: 'bg',
+        entrypoint: 'cli',
+        jobId: 'ab12cd34',
+        name: 'probe-2418',
+        status: 'idle',
+      }),
+    },
+  ]
+  await openSidebar(
+    $,
+    on,
+    '    1\n    3\n    8\n',
+    argv => {
+      commands.push(argv)
+
+      return argv[0] === 'glab' ? '[{"iid":2230,"state":"merged"}]' : ''
+    },
+    written,
+  )
+
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'menu-8' })
+  expect(await ui.find({ type: 'Button', text: '› Stop session' })).toBeDefined()
+  await ui.press({ key: 'answer-live-8-1' })
+
+  // the MR, the worktree's status, its lock, the remover; then stopped, not killed
+  expect(commands.map(argv => argv[0])).toEqual(['glab', 'git', 'git', 'sh', 'sh'])
+  expect(commands[3]?.slice(3, 6)).toEqual(['remover', '8', '/repo/ioi'])
+  expect(commands[4]).toEqual([
+    'sh',
+    '-c',
+    'CLAUDE_CONFIG_DIR="$1" claude stop "$2"',
+    'stop',
+    '/cfg',
+    'ab12cd34',
+  ])
+})
+
 test('≡ Finish refuses while another live session works in the same worktree', async ($, on) => {
   const commands: string[] = []
   await openSidebar($, on, '    1\n    3\n    4\n    5\n', argv => {

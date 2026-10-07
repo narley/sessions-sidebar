@@ -1568,7 +1568,8 @@ const removeWorktreeAndEnd = async (
     isLockStale ? 'unlock' : '',
   ])
   $.ui.toast(`${one.name}: closing; worktree ${baseName(worktree.path)} goes once it has exited`)
-  await endSession($, one)
+  // a background session has no tab to close; `claude stop` ends its process within seconds
+  await (one.jobId === undefined ? endSession($, one) : stopBackground($, one))
 }
 
 const CLOSE = 'Close, keep worktree'
@@ -1674,7 +1675,7 @@ const openSessionMenu = ($: EngineInterface, one: SessionRow) =>
         one.status === 'busy'
           ? 'Busy in the background. Stop it anyway?'
           : 'Stop this background session?',
-        [STOP_BACKGROUND],
+        one.worktree === undefined ? [STOP_BACKGROUND] : [STOP_BACKGROUND, FINISH],
       )
     : toggleQuestion(
         $,
