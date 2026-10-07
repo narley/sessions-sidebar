@@ -1575,6 +1575,7 @@ const removeWorktreeAndEnd = async (
 const CLOSE = 'Close, keep worktree'
 const CLOSE_MAIN = 'Close session'
 const STOP_BACKGROUND = 'Stop session'
+const STOP_KEEP = 'Stop, keep worktree'
 const CLOSE_ALL = 'Close all sessions'
 const REOPEN_ALL = 'Reopen all'
 const FINISH = 'Finish, delete worktree'
@@ -1591,6 +1592,7 @@ const DESTRUCTIVE = [
   CONFIRM_CLOSE_ALL,
   CONFIRM_ARCHIVE_ALL,
   STOP_BACKGROUND,
+  STOP_KEEP,
 ]
 const RESUME = 'Resume in a new tab'
 const ARCHIVE = 'Archive'
@@ -1675,7 +1677,7 @@ const openSessionMenu = ($: EngineInterface, one: SessionRow) =>
         one.status === 'busy'
           ? 'Busy in the background. Stop it anyway?'
           : 'Stop this background session?',
-        one.worktree === undefined ? [STOP_BACKGROUND] : [STOP_BACKGROUND, FINISH],
+        one.worktree === undefined ? [STOP_BACKGROUND] : [STOP_KEEP, FINISH],
       )
     : toggleQuestion(
         $,
@@ -1685,7 +1687,7 @@ const openSessionMenu = ($: EngineInterface, one: SessionRow) =>
       )
 
 const answerSessionQuestion = async ($: EngineInterface, one: SessionRow, choice: string) => {
-  if (choice === STOP_BACKGROUND) return stopBackground($, one)
+  if (choice === STOP_BACKGROUND || choice === STOP_KEEP) return stopBackground($, one)
   if (choice === CLOSE || choice === CLOSE_MAIN) return endSession($, one)
   if (choice === FINISH) return finishSession($, one)
   if (choice === DELETE_ANYWAY) return removeWorktreeIfClean($, one)

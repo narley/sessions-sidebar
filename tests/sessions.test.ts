@@ -713,7 +713,7 @@ test('≡ Finish on a background session stops it, its worktree removed once it 
 
   const ui = await mountPane($, 'terminal')
   await ui.press({ key: 'menu-8' })
-  expect(await ui.find({ type: 'Button', text: '› Stop session' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: '› Stop, keep worktree' })).toBeDefined()
   await ui.press({ key: 'answer-live-8-1' })
 
   // the MR, the worktree's status, its lock, the remover; then stopped, not killed
