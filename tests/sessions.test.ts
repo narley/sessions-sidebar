@@ -1200,7 +1200,10 @@ test('a background session sits under the one that started it; a click attaches 
 test('a session records the background sessions its shell starts, so they always nest under it', async ($, on) => {
   // the worker runs an autopilot too: one frame holds both
   const written = [
-    { path: '/cfg/sessions-sidebar/state/bgjob.json', text: '{"running":0,"isAutopilot":true}' },
+    {
+      path: '/cfg/sessions-sidebar/state/bgjob.json',
+      text: '{"running":0,"isAutopilot":true,"cost":34.05}',
+    },
   ]
   // the shell's answer, in the format with no `backgrounded` line
   on('tool.call', () => ({
@@ -1238,6 +1241,8 @@ test('a session records the background sessions its shell starts, so they always
     ),
   ).toEqual(['row-3', 'row-1', 'row-8'])
   expect(await ui.findAll({ type: 'Text', text: ' ⚡ AUTOPILOT ' })).toHaveLength(1)
+  // its own published cost wins over its transcript's
+  expect(await ui.find({ type: 'Text', text: /^34\.05 spent$/ })).toBeDefined()
 })
 
 test('only a launch records a background session, and the first to record it keeps it', async ($, on) => {

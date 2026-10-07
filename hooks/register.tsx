@@ -867,7 +867,9 @@ const loadSessions = async (
 
       const tail = tails[index] ?? ''
       const isBackground = one.kind === 'bg'
-      const savedCost = lastIn(tail, /"totalCostUSD":([0-9.eE+-]+)/g)
+      // a background session publishes its state like any other once its own mod has run; until
+      // then its transcript tells
+      const savedCost = isBackground ? lastIn(tail, /"totalCostUSD":([0-9.eE+-]+)/g) : undefined
 
       return {
         pid: one.pid,
@@ -881,16 +883,16 @@ const loadSessions = async (
         // a busy session's own loop is an agent at work too
         agents: (one.status === 'busy' ? 1 : 0) + (states[index]?.running ?? 0),
         isAutopilot: states[index]?.isAutopilot ?? false,
-        model: isBackground ? lastIn(tail, /"model":"(claude-[^"]+)"/g) : states[index]?.model,
+        model:
+          states[index]?.model ??
+          (isBackground ? lastIn(tail, /"model":"(claude-[^"]+)"/g) : undefined),
         color: isBackground ? jobColors[background.indexOf(one)] : states[index]?.color,
-        effort: isBackground
-          ? lastIn(tail, /"effort":"(low|medium|high|xhigh|max)"/g)
-          : states[index]?.effort,
-        cost: isBackground
-          ? savedCost === undefined
-            ? undefined
-            : Math.round(Number(savedCost) * 100) / 100
-          : states[index]?.cost,
+        effort:
+          states[index]?.effort ??
+          (isBackground ? lastIn(tail, /"effort":"(low|medium|high|xhigh|max)"/g) : undefined),
+        cost:
+          states[index]?.cost ??
+          (savedCost === undefined ? undefined : Math.round(Number(savedCost) * 100) / 100),
         context: states[index]?.context,
         jobId: isBackground ? one.jobId : undefined,
         launchedBy: isBackground ? launcherOf(one.jobId) : undefined,
