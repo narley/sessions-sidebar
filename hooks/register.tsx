@@ -262,9 +262,17 @@ const recordLaunches = async (
         ),
     )
   ).flatMap(one => (one?.kind === 'bg' && one.jobId !== undefined ? [one] : []))
-  const shown = jobs.filter(one => one.jobId !== undefined && stdout.includes(one.jobId))
+  // a session that only lists or greps them sees their ids too: those are no launch
+  const isLaunch = /\bclaude\b[\s\S]*--(bg|background)\b/.test(command)
+  const shown = jobs.filter(
+    one =>
+      one.jobId !== undefined &&
+      (isLaunch
+        ? stdout.includes(one.jobId)
+        : new RegExp(`\\bbackgrounded\\s*·\\s*${one.jobId}\\b`).test(stdout)),
+  )
   const started =
-    shown.length > 0 || !/--(bg|background)\b/.test(command)
+    shown.length > 0 || !isLaunch
       ? shown
       : jobs.filter(one => one.startedAt >= since - 1000 && one.startedAt <= until + 1000)
   if (started.length === 0) return
@@ -274,15 +282,19 @@ const recordLaunches = async (
     .read(launchesFileOf(configDir))
     .then(text => JSON.parse(String(text)) as unknown)
     .catch(() => ({}))
-  // only the jobs still registered are kept, so the file stays small
+  // only the jobs still registered are kept, so the file stays small; the first session to record
+  // a job keeps it, as a launcher sees its worker's id before anyone else can
   const kept = Object.fromEntries(
     Object.entries(typeof saved === 'object' && saved !== null ? saved : {}).filter(([id]) =>
       jobs.some(one => one.jobId === id),
     ),
   )
+  const added = started.filter(one => one.jobId !== undefined && !(one.jobId in kept))
+  if (added.length === 0) return
+
   await $.fs.write(
     launchesFileOf(configDir),
-    JSON.stringify({ ...kept, ...Object.fromEntries(started.map(one => [one.jobId, own])) }),
+    JSON.stringify({ ...kept, ...Object.fromEntries(added.map(one => [one.jobId, own])) }),
   )
 }
 
@@ -358,9 +370,10 @@ const worktreeOf = (cwd: string, name: string | undefined, worktrees: readonly W
 }
 
 // a run starts with /ioi-autopilot or the model's Skill call and ends when it moves the ticket to
-// stage:: review; the skill's own text quotes that label in backticks, so a quote must follow it
+// stage:: review; the skill's own text names that label in backticks, bare or as
+// `"add_labels=stage:: review"`, so a quote must follow it, and no backtick after that
 const AUTOPILOT_MARKERS =
-  '"(content|text)":"<command-message>ioi-autopilot</command-message>|"name":"Skill","input":\\{"skill":"ioi-autopilot"|stage:: review\\\\*"'
+  '"(content|text)":"<command-message>ioi-autopilot</command-message>|"name":"Skill","input":\\{"skill":"ioi-autopilot"|stage:: review\\\\*"[^`]'
 
 const isRunningAutopilot = async ($: EngineInterface, transcript: string) => {
   const found = await $.process
@@ -2038,6 +2051,11 @@ export const register: Register = on => {
       ),
     })
     const accent = isPulsing ? 'magenta' : 'yellow'
+    const autopilotBadge = (
+      <Text backgroundColor={accent} color="black" bold>
+        {' ⚡ AUTOPILOT '}
+      </Text>
+    )
     // a Text shrinks beside a long one and wraps onto a line the bar leaves blank: only names give way
     // a session's detail: its icon in colour, the rest dim
     const detail = (indent: string, icon: keyof typeof DETAIL_ICONS, text: string) => (
@@ -2098,31 +2116,28 @@ export const register: Register = on => {
     )
     const isCompact = level === 'compact'
     const isFull = level === 'full'
-    // compact rows sit without a gap, all but the last, which keeps the one before the next heading
-    const liveRow = (one: SessionRow, index: number, shown: readonly SessionRow[]) => ({
+    // compact rows sit without a gap, all but the last, which keeps the one before the next heading;
+    // a running autopilot gets a frame, unless it shares its batch's
+    const liveRow = (one: SessionRow, { gap, isFramed }: { gap: number; isFramed: boolean }) => ({
       rows:
         1 +
-        (isCompact && index < shown.length - 1 ? 0 : 1) +
+        gap +
         (isCompact
           ? 0
           : 1 + (one.branch === undefined ? 0 : 1) + (one.context === undefined ? 0 : 1)) +
         (isFull ? (one.agents > 0 ? 1 : 0) + (one.cost === undefined ? 0 : 1) : 0) +
         // the frame's two edges and the badge
-        (one.isAutopilot ? 3 : 0) +
+        (isFramed ? 3 : 0) +
         questionRows(liveKey(one)),
       element: (
         <Box
           flexDirection="column"
-          marginBottom={isCompact && index < shown.length - 1 ? 0 : 1}
+          marginBottom={gap}
           flexShrink={0}
-          borderStyle={one.isAutopilot ? 'round' : undefined}
+          borderStyle={isFramed ? 'round' : undefined}
           borderColor={accent}
         >
-          {one.isAutopilot && (
-            <Text backgroundColor={accent} color="black" bold>
-              {' ⚡ AUTOPILOT '}
-            </Text>
-          )}
+          {isFramed && autopilotBadge}
           <Box flexDirection="row">
             {marker(one)}
             {one.jobId !== undefined && (
@@ -2341,6 +2356,19 @@ export const register: Register = on => {
       ),
     ]
     const shownLive = nested.filter(one => holds(searches.live ?? '', liveTexts(one)))
+    // each session shown with the background sessions it started, which scroll and frame with it
+    const liveGroups = shownLive.flatMap(one =>
+      one.jobId !== undefined && shownLive.some(top => top.pid === one.launchedBy)
+        ? []
+        : [
+            [
+              one,
+              ...shownLive.filter(
+                other => other.jobId !== undefined && other.launchedBy === one.pid,
+              ),
+            ],
+          ],
+    )
     const shownDormant = dormant.filter(one => holds(searches.dormant ?? '', placeTexts(one)))
     // Done: sessions whose worktree is gone, and the ad hoc ones archived from Closed; newest first,
     // the last week listed and the rest under its own older menu
@@ -2688,7 +2716,35 @@ export const register: Register = on => {
             return chosen === undefined ? Promise.resolve() : setDetailLevel($, chosen)
           },
         },
-        items: shownLive.map(liveRow),
+        items: liveGroups.map((group, index) => {
+          const gap = isCompact && index < liveGroups.length - 1 ? 0 : 1
+          const [head] = group
+          if (group.length === 1 && head !== undefined) {
+            return liveRow(head, { gap, isFramed: head.isAutopilot })
+          }
+
+          // a batch: the orchestrator and its workers in one frame while any of them runs
+          const isFramed = group.some(one => one.isAutopilot)
+          const members = group.map((one, at) =>
+            liveRow(one, { gap: at === group.length - 1 || isCompact ? 0 : 1, isFramed: false }),
+          )
+
+          return {
+            rows: members.reduce((sum, member) => sum + member.rows, 0) + gap + (isFramed ? 3 : 0),
+            element: (
+              <Box
+                flexDirection="column"
+                marginBottom={gap}
+                flexShrink={0}
+                borderStyle={isFramed ? 'round' : undefined}
+                borderColor={accent}
+              >
+                {isFramed && autopilotBadge}
+                {members.map(member => member.element)}
+              </Box>
+            ),
+          }
+        }),
       },
       // paused work: worktrees no session runs in (↻), then named sessions that never had one
       // (≡), newest first, with the older of those in their own menu; the filter picks either

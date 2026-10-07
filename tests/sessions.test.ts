@@ -1137,7 +1137,10 @@ test('a background session sits under the one that started it; a click attaches 
 })
 
 test('a session records the background sessions its shell starts, so they always nest under it', async ($, on) => {
-  const written: { path: string; text: string }[] = []
+  // the worker runs an autopilot too: one frame holds both
+  const written = [
+    { path: '/cfg/sessions-sidebar/state/bgjob.json', text: '{"running":0,"isAutopilot":true}' },
+  ]
   // the shell's answer, in the format with no `backgrounded` line
   on('tool.call', () => ({
     result: { stdout: 'ab12cd34 probe-2412 busy working', stderr: '', interrupted: false },
@@ -1173,6 +1176,32 @@ test('a session records the background sessions its shell starts, so they always
       /^row-\d+$/.test(String(found.key)) ? [found.key] : [],
     ),
   ).toEqual(['row-3', 'row-1', 'row-8'])
+  expect(await ui.findAll({ type: 'Text', text: ' ⚡ AUTOPILOT ' })).toHaveLength(1)
+})
+
+test('only a launch records a background session, and the first to record it keeps it', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  let stdout = ''
+  on('tool.call', () => ({ result: { stdout, stderr: '', interrupted: false } }))
+  const clock = await openSidebar($, on, '    1\n    3\n    8\n', () => '', written)
+  const run = async (command: string, shown: string) => {
+    stdout = shown
+    await $.tool.call({ tool: 'Bash', command })
+    for (let i = 0; i < 20; i += 1) await clock.advance(1)
+  }
+  const launches = () =>
+    written.filter(one => one.path.endsWith('/launches.json')).map(one => one.text)
+
+  // a listing shows its id, but launched nothing
+  await run('claude agents', 'ab12cd34 probe-2412 busy working')
+  expect(launches()).toEqual([])
+  // its launch line, read back from a script's output
+  await run('cat launch.out', 'backgrounded · ab12cd34 · probe-2412')
+  expect(launches()).toEqual(['{"ab12cd34":"me"}'])
+  // recorded by another first, it stays theirs
+  written.push({ path: '/cfg/sessions-sidebar/launches.json', text: '{"ab12cd34":"other"}' })
+  await run('claude --bg probe', 'backgrounded · ab12cd34 · probe-2412')
+  expect(launches().at(-1)).toBe('{"ab12cd34":"other"}')
 })
 
 test('leaves out a script’s headless run, which has no tab of its own', async ($, on) => {
