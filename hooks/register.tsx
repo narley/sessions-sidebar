@@ -262,8 +262,9 @@ const recordLaunches = async (
         ),
     )
   ).flatMap(one => (one?.kind === 'bg' && one.jobId !== undefined ? [one] : []))
-  // a session that only lists or greps them sees their ids too: those are no launch
-  const isLaunch = /\bclaude\b[\s\S]*--(bg|background)\b/.test(command)
+  // a session that only lists or greps them sees their ids too: those are no launch; nor is a
+  // command that merely names a .claude path and --bg, so claude must be the command word
+  const isLaunch = /(?:^|[\s;&|(])claude\s[^;&|\n]*--(?:bg|background)\b/.test(command)
   const shown = jobs.filter(
     one =>
       one.jobId !== undefined &&

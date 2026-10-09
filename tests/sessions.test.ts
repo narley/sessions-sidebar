@@ -1270,6 +1270,39 @@ test('only a launch records a background session, and the first to record it kee
   expect(launches().at(-1)).toBe('{"ab12cd34":"other"}')
 })
 
+test('a command that only names claude paths and --bg launches nothing', async ($, on) => {
+  // the background session registers while the command runs
+  const written = [
+    {
+      path: '/cfg/sessions/8.json',
+      text: JSON.stringify({
+        pid: 8,
+        sessionId: 'bgjob',
+        cwd: '/repo/ioi',
+        startedAt: NOW,
+        kind: 'bg',
+        entrypoint: 'cli',
+        jobId: 'ab12cd34',
+        name: 'probe-2412',
+        status: 'busy',
+      }),
+    },
+  ]
+  on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
+  const clock = await openSidebar($, on, '    1\n    3\n    8\n', () => '', written)
+  const run = async (command: string) => {
+    await $.tool.call({ tool: 'Bash', command })
+    for (let i = 0; i < 20; i += 1) await clock.advance(1)
+  }
+  const launches = () =>
+    written.filter(one => one.path.endsWith('/launches.json')).map(one => one.text)
+
+  await run("cd ~/.claude-work/projects && grep -c -- '--bg' x.jsonl")
+  expect(launches()).toEqual([])
+  await run("CLAUDE_CONFIG_DIR=/cfg claude --bg --name probe-2412 'look around' > /dev/null")
+  expect(launches()).toEqual(['{"ab12cd34":"me"}'])
+})
+
 test('leaves out a script’s headless run, which has no tab of its own', async ($, on) => {
   await openSidebar($, on, '    1\n    3\n    7\n')
 
