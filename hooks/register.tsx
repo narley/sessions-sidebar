@@ -899,6 +899,7 @@ const loadSessions = async (
 
       return {
         pid: one.pid,
+        sessionId: one.sessionId,
         name: one.name ?? place,
         status: one.status ?? 'idle',
         place,
@@ -1226,13 +1227,38 @@ const findSessionOf = async ($: EngineInterface, configDir: string, one: Dormant
     ['"entrypoint":"cli"'],
     files.filter(file => file.path.startsWith(`${projects}/${treeKey}/`)).map(file => file.path),
   )
-  const chosen = newestOf(files, titled) ?? newestOf(files, startedInside)
+  // else one started in the repo that moved into the worktree: its transcript stays where it began
+  const chosen =
+    newestOf(files, titled) ??
+    newestOf(files, startedInside) ??
+    newestOf(files, await workedInside($, one.path, files))
   if (chosen === undefined) return undefined
 
   return {
     id: baseName(chosen.path).replace(/\.jsonl$/, ''),
     cwd: (await startCwdOf($, chosen.path)) ?? one.path,
   }
+}
+
+// interactive transcripts with a cwd inside the worktree, newest first in batches, as only the newest
+// counts: all of them (450, some large) take ~5 s, the newest 25 a fraction of that
+const workedInside = async (
+  $: EngineInterface,
+  worktree: string,
+  files: readonly { path: string; mtimeMs: number }[],
+) => {
+  const newestFirst = [...files].sort((a, b) => b.mtimeMs - a.mtimeMs).map(file => file.path)
+  for (let at = 0; at < newestFirst.length; at += 25) {
+    const inside = await grepFiles(
+      $,
+      [`"cwd":"${worktree}"`, `"cwd":"${worktree}/`],
+      newestFirst.slice(at, at + 25),
+    )
+    const found = await grepFiles($, ['"entrypoint":"cli"'], inside)
+    if (found.length > 0) return found
+  }
+
+  return []
 }
 
 // --resume finds a session from the folder it was started in
@@ -1285,6 +1311,10 @@ const openWarpTabRunning = async (
 const resumeInWarpTab = async ($: EngineInterface, one: DormantRow) => {
   const configDir = await configDirOf($)
   const session = await findSessionOf($, configDir, one)
+  // still running, back in the repo: its own tab rather than a second copy
+  const running = (await read($, rows)).find(row => row.sessionId === session?.id)
+  if (running !== undefined) return openLiveSession($, running)
+
   if (session === undefined) $.ui.toast(`${one.name}: no session found, opening the resume picker`)
   const target = session?.id ?? ticketOf(baseName(one.path)) ?? one.name
 

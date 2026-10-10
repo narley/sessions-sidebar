@@ -1,5 +1,6 @@
 export type SessionRow = {
   pid: number
+  sessionId: string
   name: string
   status: string
   place: string

@@ -251,6 +251,8 @@ const LISTINGS: Record<string, ReturnType<typeof entry>[]> = {
     entry('closed3.jsonl', 'file', 6),
     // a stopped background session: untitled, so listed only where a test gives its job a name
     entry('worker1.jsonl', 'file', NOW - 7_200_000),
+    // 2441-autopilot's own, which is live
+    entry('auto.jsonl', 'file', 3),
   ],
   '/cfg/jobs': [entry('ab12cd34', 'dir'), entry('a0b1c2d3', 'dir')],
   '/cfg/projects/-repo-ioi--claude-worktrees-2418': [entry('review.jsonl', 'file', 9)],
@@ -1112,6 +1114,67 @@ test('clicking a dormant session resumes its ticket-titled session in a new Warp
     `commands = ["CLAUDE_CONFIG_DIR='/cfg' claude --dangerously-skip-permissions --resume 'named'"]`,
   )
   expect(opened).toEqual(['open warppreview://tab_config/sessions-sidebar-resume'])
+})
+
+// grep -l over transcripts: the ones that worked in the 2418 worktree, and which of those are
+// interactive sessions; no title names 2418 and none started inside it
+const workedIn2418 = (transcript: string) => (argv: readonly string[]) => {
+  if (argv[0] !== 'grep') return undefined
+  if (argv.includes('"cwd":"/repo/ioi/.claude/worktrees/2418"')) return `${transcript}\n`
+  if (argv.includes('"entrypoint":"cli"')) {
+    return argv.filter(arg => arg === transcript).join('\n')
+  }
+
+  return ''
+}
+
+test('a closed worktree resumes the session that moved into it from the repo', async ($, on) => {
+  const opened: string[] = []
+  const written: { path: string; text: string }[] = []
+  const grep = workedIn2418('/cfg/projects/-repo-ioi/old.jsonl')
+  await openSidebar(
+    $,
+    on,
+    '    1\n    3\n',
+    argv => {
+      const found = grep(argv)
+      if (found !== undefined) return found
+      if (argv[0] === 'head') return '{"cwd":"/repo/ioi","sessionId":"old"}\n'
+      opened.push(argv.join(' '))
+
+      return ''
+    },
+    written,
+  )
+
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'dormant-/repo/ioi/.claude/worktrees/2418' })
+  expect(written.at(-1)?.text).toContain("--resume 'old'")
+})
+
+test('a closed worktree whose session is still running elsewhere goes to its tab', async ($, on) => {
+  const opened: string[] = []
+  const written: { path: string; text: string }[] = []
+  const grep = workedIn2418('/cfg/projects/-repo-ioi/auto.jsonl')
+  await openSidebar(
+    $,
+    on,
+    '    1\n    3\n    4\n',
+    argv => {
+      const found = grep(argv)
+      if (found !== undefined) return found
+      if (argv[0] === 'ps') return 'claude WARP_FOCUS_URL=warppreview://session/abc4\n'
+      opened.push(argv.join(' '))
+
+      return ''
+    },
+    written,
+  )
+
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'dormant-/repo/ioi/.claude/worktrees/2418' })
+  expect(opened).toContain('open warppreview://session/abc4')
+  expect(written.some(file => file.path.endsWith('sessions-sidebar-resume.toml'))).toBe(false)
 })
 
 test('≡ on the Closed heading reopens every closed session, one tab at a time', async ($, on) => {
