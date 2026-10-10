@@ -34,6 +34,7 @@ export type DormantRow = {
   path: string
   repo: string
   name: string
+  branch?: string
   place: string
   // what the session titled after its ticket last saved as its cost, in US dollars
   cost?: number

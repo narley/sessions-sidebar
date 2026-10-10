@@ -307,7 +307,7 @@ const openSidebar = async (
     const [command, ...rest] = e.argv
     if (command === 'ps' && rest[0] === '-o') return ran(psStdout)
     if (command === 'date' && rest[1] === '1273600') return ran('Thu 17:46\n')
-    if (command === 'git' && rest.includes('worktree')) {
+    if (command === 'git' && rest.includes('worktree') && rest.includes('list')) {
       const at = rest[rest.indexOf('-C') + 1] ?? ''
       if (at === '/repo/fix') return ran(FIX_WORKTREES)
       if (at.startsWith('/repo/ioi')) return ran(WORKTREES)
@@ -1175,6 +1175,41 @@ test('a closed worktree whose session is still running elsewhere goes to its tab
   await ui.press({ key: 'dormant-/repo/ioi/.claude/worktrees/2418' })
   expect(opened).toContain('open warppreview://session/abc4')
   expect(written.some(file => file.path.endsWith('sessions-sidebar-resume.toml'))).toBe(false)
+})
+
+test('≡ on a closed worktree deletes it, asking again while its MR is open; the branch stays', async ($, on) => {
+  const commands: string[] = []
+  let mergeRequests = '[{"iid":2251,"state":"opened"}]'
+  await openSidebar($, on, '    1\n    3\n', argv => {
+    commands.push(argv.join(' '))
+
+    return argv[0] === 'glab' ? mergeRequests : ''
+  })
+
+  const ui = await mountPane($, 'terminal')
+  const key = 'dormant-/repo/ioi/.claude/worktrees/2418'
+  await ui.press({ key: `${key}-menu` })
+  expect(await ui.find({ type: 'Text', text: 'No session runs in worktree 2418.' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: '› Resume in a new tab' })).toBeDefined()
+
+  // its MR is open: asked again, and nothing goes until the answer
+  await ui.press({ key: `answer-${key}-1` })
+  expect(commands.some(one => one.includes('worktree remove'))).toBe(false)
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: /MR !2251 is opened, not merged\. Delete worktree 2418 anyway\?/,
+    }),
+  ).toBeDefined()
+  await ui.press({ key: `answer-${key}-0` })
+  expect(commands).toContain('git -C /repo/ioi worktree remove /repo/ioi/.claude/worktrees/2418')
+
+  // merged: no second question
+  commands.length = 0
+  mergeRequests = '[{"iid":2251,"state":"merged"}]'
+  await ui.press({ key: `${key}-menu` })
+  await ui.press({ key: `answer-${key}-1` })
+  expect(commands).toContain('git -C /repo/ioi worktree remove /repo/ioi/.claude/worktrees/2418')
 })
 
 test('≡ on the Closed heading reopens every closed session, one tab at a time', async ($, on) => {

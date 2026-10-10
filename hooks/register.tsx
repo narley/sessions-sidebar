@@ -935,6 +935,7 @@ const loadSessions = async (
         path: tree.path,
         repo: tree.repo,
         name: tree.branch ?? baseName(tree.path),
+        branch: tree.branch,
         place: placeOf(tree.path),
         cost: costOfTicket.get(
           `${tree.repo}#${ticketOf(baseName(tree.path)) ?? ticketOf(tree.branch)}`,
@@ -1644,6 +1645,7 @@ const STOP_KEEP = 'Stop, keep worktree'
 const CLOSE_ALL = 'Close all sessions'
 const REOPEN_ALL = 'Reopen all'
 const FINISH = 'Finish, delete worktree'
+const DELETE_WORKTREE = 'Delete worktree'
 const DELETE_ANYWAY = 'Delete anyway'
 const DELETE_CHANGES = 'Delete with changes'
 // the second step Close all and Archive all ask for, as both act on a whole section at once
@@ -1652,6 +1654,7 @@ const CONFIRM_ARCHIVE_ALL = 'Yes, archive all'
 // drawn red under the pointer
 const DESTRUCTIVE = [
   FINISH,
+  DELETE_WORKTREE,
   DELETE_ANYWAY,
   DELETE_CHANGES,
   CONFIRM_CLOSE_ALL,
@@ -1750,6 +1753,55 @@ const openSessionMenu = ($: EngineInterface, one: SessionRow) =>
         one.status === 'busy' ? 'Busy right now. Close it anyway?' : 'Close this session?',
         one.worktree === undefined ? [CLOSE_MAIN] : [CLOSE, FINISH],
       )
+
+// a worktree no session runs in goes at once, its branch kept; a lock its Claude session left behind
+// is lifted first (that session has ended), any other lock refuses it
+const removeDormantWorktree = async ($: EngineInterface, one: DormantRow, isForced: boolean) => {
+  if (await hasStaleClaudeLock($, one.path, -1)) {
+    await $.process
+      .run(['git', '-C', one.repo, 'worktree', 'unlock', one.path])
+      .catch(() => undefined)
+  }
+  const removed = await $.process
+    .run(['git', '-C', one.repo, 'worktree', 'remove', ...(isForced ? ['--force'] : []), one.path])
+    .catch(() => undefined)
+  $.ui.toast(
+    removed?.exitCode === 0
+      ? `${baseName(one.path)}: worktree deleted, branch ${one.branch ?? ''} kept`
+      : `${baseName(one.path)}: not deleted. ${(removed?.stderr ?? '').trim().split('\n')[0] ?? ''}`,
+  )
+  void refresh($)
+}
+
+const removeDormantWorktreeIfClean = async ($: EngineInterface, one: DormantRow, key: string) => {
+  const status = await $.process
+    .run(['git', '-C', one.path, 'status', '--porcelain'])
+    .catch(() => undefined)
+  if ((status?.stdout ?? '').trim() === '') return removeDormantWorktree($, one, false)
+
+  await ask($, key, `Worktree ${baseName(one.path)} has uncommitted changes.`, [DELETE_CHANGES])
+}
+
+// as Finish does: a merged branch's worktree goes without asking, any other is asked about again
+const answerDormantQuestion = async (
+  $: EngineInterface,
+  { one, key, choice }: { one: DormantRow; key: string; choice: string },
+) => {
+  if (choice === RESUME) return resumeInWarpTab($, one)
+  if (choice === DELETE_ANYWAY) return removeDormantWorktreeIfClean($, one, key)
+  if (choice === DELETE_CHANGES) return removeDormantWorktree($, one, true)
+  if (choice !== DELETE_WORKTREE) return
+
+  const request =
+    one.branch === undefined
+      ? { isMerged: false, summary: 'It has no branch' }
+      : await mergeRequestOf($, one.repo, one.branch)
+  if (request.isMerged) return removeDormantWorktreeIfClean($, one, key)
+
+  await ask($, key, `${request.summary}. Delete worktree ${baseName(one.path)} anyway?`, [
+    DELETE_ANYWAY,
+  ])
+}
 
 const answerSessionQuestion = async ($: EngineInterface, one: SessionRow, choice: string) => {
   if (choice === STOP_BACKGROUND || choice === STOP_KEEP) return stopBackground($, one)
@@ -2860,12 +2912,19 @@ export const register: Register = on => {
         items: [
           ...(filter === 'adhoc'
             ? []
-            : shownDormant.map(one =>
-                resumableRow(
-                  { ...one, key: `dormant-${one.path}`, glyph: '○', isGone: false },
+            : shownDormant.map(one => {
+                const key = `dormant-${one.path}`
+
+                return resumableRow(
+                  { ...one, key, glyph: '○', isGone: false },
                   () => resumeInWarpTab($, one),
-                ),
-              )),
+                  {
+                    text: `No session runs in worktree ${baseName(one.path)}.`,
+                    options: [RESUME, DELETE_WORKTREE],
+                    handle: choice => answerDormantQuestion($, { one, key, choice }),
+                  },
+                )
+              })),
           ...(filter === 'worktrees' ? [] : matchedCheckout.map(checkoutRow)),
           ...(filter === 'worktrees' || older.length === 0 ? [] : [olderMenu]),
         ],
