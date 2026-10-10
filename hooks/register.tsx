@@ -283,13 +283,17 @@ const recordLaunches = async (
     .read(launchesFileOf(configDir))
     .then(text => JSON.parse(String(text)) as unknown)
     .catch(() => ({}))
-  // only the jobs still registered are kept, so the file stays small; the first session to record
-  // a job keeps it, as a launcher sees its worker's id before anyone else can
-  const kept = Object.fromEntries(
-    Object.entries(typeof saved === 'object' && saved !== null ? saved : {}).filter(([id]) =>
-      jobs.some(one => one.jobId === id),
+  // a job's link lasts as long as its job, which a resumed worker keeps, so the file stays small;
+  // the first session to record a job keeps it, as a launcher sees its worker's id first
+  const entries = Object.entries(typeof saved === 'object' && saved !== null ? saved : {})
+  const isKept = await Promise.all(
+    entries.map(
+      ([id]) =>
+        jobs.some(one => one.jobId === id) ||
+        $.fs.exists(`${configDir}/jobs/${id}`).catch(() => false),
     ),
   )
+  const kept = Object.fromEntries(entries.filter((_, index) => isKept[index]))
   const added = started.filter(one => one.jobId !== undefined && !(one.jobId in kept))
   if (added.length === 0) return
 
@@ -810,12 +814,10 @@ const loadSessions = async (
           .catch(() => undefined),
       ),
     ),
-    background.length === 0
-      ? Promise.resolve<Record<string, string>>({})
-      : $.fs
-          .read(launchesFileOf(configDir))
-          .then(text => JSON.parse(String(text)) as Record<string, string>)
-          .catch((): Record<string, string> => ({})),
+    $.fs
+      .read(launchesFileOf(configDir))
+      .then(text => JSON.parse(String(text)) as Record<string, string>)
+      .catch((): Record<string, string> => ({})),
   ])
   // workers started some other way (a script that runs claude --bg) are looked for in transcripts
   await findLaunchers(
@@ -919,7 +921,8 @@ const loadSessions = async (
           (savedCost === undefined ? undefined : Math.round(Number(savedCost) * 100) / 100),
         context: states[index]?.context,
         jobId: isBackground ? one.jobId : undefined,
-        launchedBy: isBackground ? launcherOf(one.jobId) : undefined,
+        // a worker resumed in a tab runs as a plain session, its job id still its id's first 8
+        launchedBy: launcherOf(one.jobId ?? one.sessionId.slice(0, 8)),
         // Remote Control is on; whether a phone has it open is not told to mods
         isRemote: typeof one.bridgeSessionId === 'string',
         isCurrent: one.sessionId === current,
@@ -2196,10 +2199,10 @@ export const register: Register = on => {
           {isFramed && autopilotBadge}
           <Box flexDirection="row">
             {marker(one)}
-            {one.jobId !== undefined && (
-              // a background session: ↳ under the one that started it, else marked bg
+            {(one.jobId !== undefined || isUnderTop(one)) && (
+              // a worker: ↳ under the one that started it, else a background one marked bg
               <Box flexShrink={0}>
-                <Text dimColor>{tops.some(top => top.pid === one.launchedBy) ? '↳ ' : 'bg '}</Text>
+                <Text dimColor>{isUnderTop(one) ? '↳ ' : 'bg '}</Text>
               </Box>
             )}
             <Box flexShrink={0}>
@@ -2399,18 +2402,20 @@ export const register: Register = on => {
     const inRepos = allLive.filter(one => repos.selected.includes(one.repo))
     // then the kind: a linked worktree, or the main checkout; Close all takes what is left
     const list = inRepos.filter(one => keeps('live', one.worktree !== undefined))
-    // each background session right under the one that started it; any whose starter is not
-    // listed comes last
-    const tops = list.filter(one => one.jobId === undefined)
-    const nested = [
-      ...tops.flatMap(top => [
-        top,
-        ...list.filter(one => one.jobId !== undefined && one.launchedBy === top.pid),
-      ]),
-      ...list.filter(
-        one => one.jobId !== undefined && !tops.some(top => top.pid === one.launchedBy),
-      ),
-    ]
+    // the sessions with a tab of their own, which Close all closes
+    const tabbed = list.filter(one => one.jobId === undefined)
+    // each worker right under the session that started it, in the background or resumed in a tab;
+    // any whose starter is not listed comes last
+    const launcherIn = (one: SessionRow) =>
+      list.find(top => top.pid === one.launchedBy && top.pid !== one.pid)
+    const tops = tabbed.filter(one => launcherIn(one) === undefined)
+    const placed = tops.flatMap(top => [top, ...list.filter(one => launcherIn(one) === top)])
+    const nested = [...placed, ...list.filter(one => !placed.includes(one))]
+    const isUnderTop = (one: SessionRow) => {
+      const launcher = launcherIn(one)
+
+      return launcher !== undefined && tops.includes(launcher)
+    }
     const shownLive = nested.filter(one => holds(searches.live ?? '', liveTexts(one)))
     // Close all stops the background sessions listed too, with `claude stop`
     const workers = list.filter(one => one.jobId !== undefined)
@@ -2418,19 +2423,15 @@ export const register: Register = on => {
       workers.length === 0
         ? ''
         : ` and stop ${workers.length} background ${workers.length === 1 ? 'session' : 'sessions'}`
-    // each session shown with the background sessions it started, which scroll and frame with it
-    const liveGroups = shownLive.flatMap(one =>
-      one.jobId !== undefined && shownLive.some(top => top.pid === one.launchedBy)
-        ? []
-        : [
-            [
-              one,
-              ...shownLive.filter(
-                other => other.jobId !== undefined && other.launchedBy === one.pid,
-              ),
-            ],
-          ],
-    )
+    // each session shown with the workers it started, which scroll and frame with it
+    const liveGroups = shownLive.flatMap(one => {
+      const launcher = launcherIn(one)
+      if (isUnderTop(one) && launcher !== undefined && shownLive.includes(launcher)) return []
+
+      return [
+        [one, ...(tops.includes(one) ? shownLive.filter(other => launcherIn(other) === one) : [])],
+      ]
+    })
     const shownDormant = dormant.filter(one => holds(searches.dormant ?? '', placeTexts(one)))
     // Done: sessions whose worktree is gone, and the ad hoc ones archived from Closed; newest first,
     // the last week listed and the rest under its own older menu
@@ -2448,7 +2449,7 @@ export const register: Register = on => {
       if (archived.includes(one.sessionId)) await setArchived($, [one.sessionId], false)
       await resumeClosedSession($, one)
     }
-    const busyCount = tops.filter(one => one.status === 'busy').length
+    const busyCount = tabbed.filter(one => one.status === 'busy').length
     const resumeOrArchive = (one: ClosedRow) => ({
       text: 'Resume it, or archive it to Done?',
       options: [RESUME, ARCHIVE],
@@ -2753,7 +2754,7 @@ export const register: Register = on => {
         }),
         // the other two levels to switch to, then Close all
         menu: {
-          text: `Showing ${level} detail. Close all ${tops.length} live sessions${stopping}, keeping their worktrees?${
+          text: `Showing ${level} detail. Close all ${tabbed.length} live sessions${stopping}, keeping their worktrees?${
             busyCount === 0 ? '' : ` ${busyCount} ${busyCount === 1 ? 'is' : 'are'} busy.`
           }`,
           options: [
@@ -2765,14 +2766,14 @@ export const register: Register = on => {
               return ask(
                 $,
                 'heading-live',
-                `Really close all ${tops.length}${
-                  tops.some(one => one.isCurrent) ? ', this one too' : ''
+                `Really close all ${tabbed.length}${
+                  tabbed.some(one => one.isCurrent) ? ', this one too' : ''
                 }${stopping}? Their worktrees stay.`,
                 [CONFIRM_CLOSE_ALL],
               )
             }
             if (choice === CONFIRM_CLOSE_ALL) {
-              return closeAllSessions($, { list: tops, background: workers })
+              return closeAllSessions($, { list: tabbed, background: workers })
             }
             const chosen = DETAIL_LEVELS.find(other => choice === `Show ${other}`)
 

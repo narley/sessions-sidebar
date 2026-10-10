@@ -1304,6 +1304,23 @@ test('a stopped background session is listed by the name its job keeps, and resu
   expect(written.at(-1)?.text).toContain("--resume 'worker1'")
 })
 
+test('a worker resumed in a tab stays under the session that launched it', async ($, on) => {
+  // 'other' was launched by 'me' as a background session; resumed, it runs in a tab of its own
+  const written = [{ path: '/cfg/sessions-sidebar/launches.json', text: '{"other":"me"}' }]
+  await openSidebar($, on, '    1\n    3\n', () => '', written)
+
+  const ui = await mountPane($, 'terminal')
+  expect(
+    (await ui.findAll({ type: 'Box' })).flatMap(found =>
+      /^row-\d+$/.test(String(found.key)) ? [found.key] : [],
+    ),
+  ).toEqual(['row-1', 'row-3'])
+  expect(await ui.find({ type: 'Text', text: /^↳ $/ })).toBeDefined()
+  // it has a tab: Close all closes it rather than stopping it
+  await ui.press({ key: 'heading-live-menu' })
+  expect(await ui.find({ type: 'Text', text: /Close all 2 live sessions, keeping/ })).toBeDefined()
+})
+
 test('a command that only names claude paths and --bg launches nothing', async ($, on) => {
   // the background session registers while the command runs
   const written = [
