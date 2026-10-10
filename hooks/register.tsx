@@ -594,7 +594,29 @@ const loadClosedSessions = async (
         .catch(() => undefined),
     ),
   )
-  const named = stale.filter((_, index) => names[index] !== undefined)
+  // a background session has no title of its own: its job keeps the name it was started with
+  const configDir = await configDirOf($)
+  const jobNames = new Map(
+    (
+      await Promise.all(
+        (await $.fs.list(`${configDir}/jobs`).catch(() => []))
+          .filter(entry => entry.kind === 'dir')
+          .map(entry =>
+            $.fs
+              .read(`${configDir}/jobs/${entry.name}/state.json`)
+              .then(text => JSON.parse(String(text)) as { sessionId?: unknown; name?: unknown })
+              .catch(() => undefined),
+          ),
+      )
+    ).flatMap(job =>
+      typeof job?.sessionId === 'string' && typeof job.name === 'string'
+        ? [[job.sessionId, job.name] as const]
+        : [],
+    ),
+  )
+  const named = stale.filter(
+    (one, index) => (names[index] ?? jobNames.get(one.sessionId)) !== undefined,
+  )
   const firsts =
     named.length === 0
       ? ''
@@ -671,7 +693,8 @@ const loadClosedSessions = async (
     { week: 0, repo: 0 },
   )
   const titled = transcripts.flatMap(one => {
-    const { name, worktree, cost } = transcriptCache.get(one.path) ?? {}
+    const { name: title, worktree, cost } = transcriptCache.get(one.path) ?? {}
+    const name = title ?? jobNames.get(one.sessionId)
     if (name === undefined) return []
     if (worktree !== undefined && worktrees.some(tree => tree.path === worktree)) return []
     const ticket = ticketOf(name)
@@ -1477,8 +1500,14 @@ const endSession = async (
 
 // the others first: ending this session also ends the sidebar that signals the rest; with every
 // tab closing there is none to switch to
-const closeAllSessions = async ($: EngineInterface, list: readonly SessionRow[]) => {
-  await Promise.all(list.filter(one => !one.isCurrent).map(one => endSession($, one)))
+const closeAllSessions = async (
+  $: EngineInterface,
+  { list, background }: { list: readonly SessionRow[]; background: readonly SessionRow[] },
+) => {
+  await Promise.all([
+    ...background.map(one => stopBackground($, one)),
+    ...list.filter(one => !one.isCurrent).map(one => endSession($, one)),
+  ])
   const current = list.find(one => one.isCurrent)
   if (current !== undefined) await endSession($, current, { shouldFocusNext: false })
 }
@@ -2383,6 +2412,12 @@ export const register: Register = on => {
       ),
     ]
     const shownLive = nested.filter(one => holds(searches.live ?? '', liveTexts(one)))
+    // Close all stops the background sessions listed too, with `claude stop`
+    const workers = list.filter(one => one.jobId !== undefined)
+    const stopping =
+      workers.length === 0
+        ? ''
+        : ` and stop ${workers.length} background ${workers.length === 1 ? 'session' : 'sessions'}`
     // each session shown with the background sessions it started, which scroll and frame with it
     const liveGroups = shownLive.flatMap(one =>
       one.jobId !== undefined && shownLive.some(top => top.pid === one.launchedBy)
@@ -2718,8 +2753,7 @@ export const register: Register = on => {
         }),
         // the other two levels to switch to, then Close all
         menu: {
-          // background sessions are left running: their ≡ stops them one by one
-          text: `Showing ${level} detail. Close all ${tops.length} live sessions, keeping their worktrees?${
+          text: `Showing ${level} detail. Close all ${tops.length} live sessions${stopping}, keeping their worktrees?${
             busyCount === 0 ? '' : ` ${busyCount} ${busyCount === 1 ? 'is' : 'are'} busy.`
           }`,
           options: [
@@ -2733,11 +2767,13 @@ export const register: Register = on => {
                 'heading-live',
                 `Really close all ${tops.length}${
                   tops.some(one => one.isCurrent) ? ', this one too' : ''
-                }? Their worktrees stay.`,
+                }${stopping}? Their worktrees stay.`,
                 [CONFIRM_CLOSE_ALL],
               )
             }
-            if (choice === CONFIRM_CLOSE_ALL) return closeAllSessions($, tops)
+            if (choice === CONFIRM_CLOSE_ALL) {
+              return closeAllSessions($, { list: tops, background: workers })
+            }
             const chosen = DETAIL_LEVELS.find(other => choice === `Show ${other}`)
 
             return chosen === undefined ? Promise.resolve() : setDetailLevel($, chosen)

@@ -170,6 +170,7 @@ const FIRST_WORKTREES = [
   '/cfg/projects/-repo-ioi/closed1.jsonl:"cwd":"/repo/ioi/.claude/worktrees/2399',
   '/cfg/projects/-repo-ioi/closed2.jsonl:"cwd":"/repo/ioi/.claude/worktrees/2418-v1',
   '/cfg/projects/-repo-ioi/closed3.jsonl:"cwd":"/repo/ioi/.claude/worktrees/2401',
+  '/cfg/projects/-repo-ioi/worker1.jsonl:"cwd":"/repo/ioi/.claude/worktrees/2499',
 ].join('\n')
 
 // grep -o -H of each named transcript's saved /cost totals, the last one per file its cost:
@@ -248,7 +249,10 @@ const LISTINGS: Record<string, ReturnType<typeof entry>[]> = {
     entry('recent.jsonl', 'file', NOW - 60_000),
     ...Array.from({ length: 11 }, (_, index) => entry(`older${index}.jsonl`, 'file', 0)),
     entry('closed3.jsonl', 'file', 6),
+    // a stopped background session: untitled, so listed only where a test gives its job a name
+    entry('worker1.jsonl', 'file', NOW - 7_200_000),
   ],
+  '/cfg/jobs': [entry('ab12cd34', 'dir'), entry('a0b1c2d3', 'dir')],
   '/cfg/projects/-repo-ioi--claude-worktrees-2418': [entry('review.jsonl', 'file', 9)],
   // 'me' runs one workflow (wf_live) with one agent still writing; wf_done has finished
   '/cfg/projects/-repo-ioi/me/subagents/workflows': [
@@ -1194,7 +1198,21 @@ test('a background session sits under the one that started it; a click attaches 
   await ui.press({ key: 'answer-live-8-0' })
   expect(commands).toContain('sh -c CLAUDE_CONFIG_DIR="$1" claude stop "$2" stop /cfg ab12cd34')
   await ui.press({ key: 'heading-live-menu' })
-  expect(await ui.find({ type: 'Text', text: /Close all 2 live sessions/ })).toBeDefined()
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: /Close all 2 live sessions and stop 1 background session, keeping/,
+    }),
+  ).toBeDefined()
+  // Close all, then yes: it is stopped as well
+  const stops = () => commands.filter(one => one.includes('claude stop')).length
+  const before = stops()
+  await ui.press({ key: 'answer-heading-live-2' })
+  expect(
+    await ui.find({ type: 'Text', text: /and stop 1 background session\? Their worktrees stay/ }),
+  ).toBeDefined()
+  await ui.press({ key: 'answer-heading-live-0' })
+  expect(stops()).toBe(before + 1)
 })
 
 test('a session records the background sessions its shell starts, so they always nest under it', async ($, on) => {
@@ -1268,6 +1286,22 @@ test('only a launch records a background session, and the first to record it kee
   written.push({ path: '/cfg/sessions-sidebar/launches.json', text: '{"ab12cd34":"other"}' })
   await run('claude --bg probe', 'backgrounded · ab12cd34 · probe-2412')
   expect(launches().at(-1)).toBe('{"ab12cd34":"other"}')
+})
+
+test('a stopped background session is listed by the name its job keeps, and resumes', async ($, on) => {
+  const written = [
+    {
+      path: '/cfg/jobs/a0b1c2d3/state.json',
+      text: '{"sessionId":"worker1","name":"2499 autopilot env5","state":"stopped"}',
+    },
+  ]
+  await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
+
+  const ui = await mountPane($, 'terminal')
+  // its worktree is gone: Done
+  expect(await ui.find({ key: 'closed-worker1', text: '2499 autopilot env5' })).toBeDefined()
+  await ui.press({ key: 'closed-worker1' })
+  expect(written.at(-1)?.text).toContain("--resume 'worker1'")
 })
 
 test('a command that only names claude paths and --bg launches nothing', async ($, on) => {
