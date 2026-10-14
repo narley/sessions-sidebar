@@ -380,12 +380,16 @@ const worktreeOf = (cwd: string, name: string | undefined, worktrees: readonly W
 const AUTOPILOT_MARKERS =
   '"(content|text)":"<command-message>ioi-autopilot</command-message>|"name":"Skill","input":\\{"skill":"ioi-autopilot"|stage:: review\\\\*"[^`]'
 
-const isRunningAutopilot = async ($: EngineInterface, transcript: string) => {
+const autopilotOf = async ($: EngineInterface, transcript: string) => {
   const found = await $.process
     .run(['grep', '-o', '-E', AUTOPILOT_MARKERS, transcript])
     .catch(() => undefined)
+  const marks = (found?.stdout ?? '').trim().split('\n')
 
-  return (found?.stdout ?? '').trim().split('\n').at(-1)?.includes('ioi-autopilot') ?? false
+  return {
+    hasRun: marks.some(mark => mark.includes('ioi-autopilot')),
+    isRunning: marks.at(-1)?.includes('ioi-autopilot') ?? false,
+  }
 }
 
 // what /color offers; `default` takes the colour away
@@ -449,6 +453,7 @@ const startingEffortOf = async (
 type OwnState = {
   running: number
   isAutopilot: boolean
+  hasAutopilot: boolean
   model?: string
   color?: string
   effort?: string
@@ -468,13 +473,14 @@ const readState = ($: EngineInterface, configDir: string, sessionId: string): Pr
     .then(state => ({
       running: state.running ?? 0,
       isAutopilot: state.isAutopilot ?? false,
+      hasAutopilot: state.hasAutopilot ?? state.isAutopilot ?? false,
       model: state.model,
       color: state.color,
       effort: state.effort,
       cost: state.cost,
       context: state.context,
     }))
-    .catch(() => ({ running: 0, isAutopilot: false }))
+    .catch(() => ({ running: 0, isAutopilot: false, hasAutopilot: false }))
 
 // $.agent.list leaves out a workflow's agents; like the status line, count those of runs not yet
 // finished (a run writes workflows/<run>.json at its end) that wrote in the last minute
@@ -507,13 +513,13 @@ const publishOwnState = async (
   configDir: string,
   own: RegisteredSession | undefined,
 ): Promise<OwnState> => {
-  if (own === undefined) return { running: 0, isAutopilot: false }
+  if (own === undefined) return { running: 0, isAutopilot: false, hasAutopilot: false }
 
   const transcript = transcriptOf(configDir, own)
-  const [agents, workflowAgents, isAutopilot, model, color, lastEffort, usage] = await Promise.all([
+  const [agents, workflowAgents, autopilot, model, color, lastEffort, usage] = await Promise.all([
     $.agent.list().catch(() => []),
     runningWorkflowAgents($, transcript.replace(/\.jsonl$/, '')),
-    isRunningAutopilot($, transcript),
+    autopilotOf($, transcript),
     $.session.model().catch(() => undefined),
     sessionColorOf($, transcript),
     lastEffortOf($, transcript),
@@ -523,7 +529,8 @@ const publishOwnState = async (
   const percent = usage?.context.percent
   const state = {
     running: agents.filter(agent => agent.status === 'running').length + workflowAgents,
-    isAutopilot,
+    isAutopilot: autopilot.isRunning,
+    hasAutopilot: autopilot.hasRun,
     model,
     color,
     effort: lastEffort ?? (await startingEffortOf($, { configDir, own, model })),
@@ -909,7 +916,13 @@ const loadSessions = async (
           tree === undefined || tree.isMain ? undefined : { path: tree.path, repo: tree.repo },
         // a busy session's own loop is an agent at work too
         agents: (one.status === 'busy' ? 1 : 0) + (states[index]?.running ?? 0),
-        isAutopilot: states[index]?.isAutopilot ?? false,
+        // a batch's orchestrator never moves a ticket to review itself: its workers say how it goes
+        autopilot: !(states[index]?.hasAutopilot ?? false)
+          ? undefined
+          : (states[index]?.isAutopilot ?? false) &&
+              !Object.values(launches).includes(one.sessionId)
+            ? 'running'
+            : 'done',
         model:
           states[index]?.model ??
           (isBackground ? lastIn(tail, /"model":"(claude-[^"]+)"/g) : undefined),
@@ -1909,7 +1922,7 @@ export const register: Register = on => {
     $.clock.every(REFRESH_MS, () => void refresh($))
     // redraws only while an autopilot card is on screen, and settles back when none is
     $.clock.every(PULSE_MS, async () => {
-      const isAnyAutopilot = (await read($, rows)).some(one => one.isAutopilot)
+      const isAnyAutopilot = (await read($, rows)).some(one => one.autopilot === 'running')
       if (isAnyAutopilot || (await read($, pulse)))
         await update($, pulse, isLit => isAnyAutopilot && !isLit)
     })
@@ -2192,11 +2205,19 @@ export const register: Register = on => {
       ),
     })
     const accent = isPulsing ? 'magenta' : 'yellow'
-    const autopilotBadge = (
-      <Text backgroundColor={accent} color="black" bold>
-        {' ⚡ AUTOPILOT '}
+    // a run in progress pulses; one handed over for review keeps a steady green frame
+    const frameColor = (frame: SessionRow['autopilot']) => (frame === 'done' ? 'green' : accent)
+    const autopilotBadge = (frame: NonNullable<SessionRow['autopilot']>) => (
+      <Text backgroundColor={frameColor(frame)} color="black" bold>
+        {frame === 'done' ? ' ⚡ AUTOPILOT · done ' : ' ⚡ AUTOPILOT '}
       </Text>
     )
+    const frameOf = (members: readonly SessionRow[]): SessionRow['autopilot'] =>
+      members.some(one => one.autopilot === 'running')
+        ? 'running'
+        : members.some(one => one.autopilot === 'done')
+          ? 'done'
+          : undefined
     // a Text shrinks beside a long one and wraps onto a line the bar leaves blank: only names give way
     // a session's detail: its icon in colour, the rest dim
     const detail = (indent: string, icon: keyof typeof DETAIL_ICONS, text: string) => (
@@ -2259,7 +2280,10 @@ export const register: Register = on => {
     const isFull = level === 'full'
     // compact rows sit without a gap, all but the last, which keeps the one before the next heading;
     // a running autopilot gets a frame, unless it shares its batch's
-    const liveRow = (one: SessionRow, { gap, isFramed }: { gap: number; isFramed: boolean }) => ({
+    const liveRow = (
+      one: SessionRow,
+      { gap, frame }: { gap: number; frame: SessionRow['autopilot'] },
+    ) => ({
       rows:
         1 +
         gap +
@@ -2268,17 +2292,17 @@ export const register: Register = on => {
           : 1 + (one.branch === undefined ? 0 : 1) + (one.context === undefined ? 0 : 1)) +
         (isFull ? (one.agents > 0 ? 1 : 0) + (one.cost === undefined ? 0 : 1) : 0) +
         // the frame's two edges and the badge
-        (isFramed ? 3 : 0) +
+        (frame === undefined ? 0 : 3) +
         questionRows(liveKey(one)),
       element: (
         <Box
           flexDirection="column"
           marginBottom={gap}
           flexShrink={0}
-          borderStyle={isFramed ? 'round' : undefined}
-          borderColor={accent}
+          borderStyle={frame === undefined ? undefined : 'round'}
+          borderColor={frameColor(frame)}
         >
-          {isFramed && autopilotBadge}
+          {frame !== undefined && autopilotBadge(frame)}
           <Box flexDirection="row">
             {marker(one)}
             {(one.jobId !== undefined || isUnderTop(one)) && (
@@ -2866,26 +2890,29 @@ export const register: Register = on => {
           const gap = isCompact && index < liveGroups.length - 1 ? 0 : 1
           const [head] = group
           if (group.length === 1 && head !== undefined) {
-            return liveRow(head, { gap, isFramed: head.isAutopilot })
+            return liveRow(head, { gap, frame: head.autopilot })
           }
 
-          // a batch: the orchestrator and its workers in one frame while any of them runs
-          const isFramed = group.some(one => one.isAutopilot)
+          // a batch: the orchestrator and its workers in one frame
+          const frame = frameOf(group)
           const members = group.map((one, at) =>
-            liveRow(one, { gap: at === group.length - 1 || isCompact ? 0 : 1, isFramed: false }),
+            liveRow(one, { gap: at === group.length - 1 || isCompact ? 0 : 1, frame: undefined }),
           )
 
           return {
-            rows: members.reduce((sum, member) => sum + member.rows, 0) + gap + (isFramed ? 3 : 0),
+            rows:
+              members.reduce((sum, member) => sum + member.rows, 0) +
+              gap +
+              (frame === undefined ? 0 : 3),
             element: (
               <Box
                 flexDirection="column"
                 marginBottom={gap}
                 flexShrink={0}
-                borderStyle={isFramed ? 'round' : undefined}
-                borderColor={accent}
+                borderStyle={frame === undefined ? undefined : 'round'}
+                borderColor={frameColor(frame)}
               >
-                {isFramed && autopilotBadge}
+                {frame !== undefined && autopilotBadge(frame)}
                 {members.map(member => member.element)}
               </Box>
             ),

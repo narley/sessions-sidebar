@@ -426,7 +426,7 @@ test('shows how many agents each session is running', async ($, on) => {
   // one subagent running, plus the one workflow agent still writing in an unfinished run
   expect(written).toContainEqual({
     path: '/cfg/sessions-sidebar/state/me.json',
-    text: '{"running":2,"isAutopilot":true,"model":"claude-opus-5-5[1m]","effort":"xhigh","cost":12.4,"context":{"percent":12,"window":1000000}}',
+    text: '{"running":2,"isAutopilot":true,"hasAutopilot":true,"model":"claude-opus-5-5[1m]","effort":"xhigh","cost":12.4,"context":{"percent":12,"window":1000000}}',
   })
   const ui = await mountPane($, 'terminal')
   // 'me' is busy: its own loop counts as one more
@@ -441,6 +441,21 @@ test('a session whose last autopilot run has not reached review shows a bolt', a
 
   const ui = await mountPane($, 'terminal')
   expect(await ui.find({ type: 'Text', text: ' ⚡ AUTOPILOT ' })).toBeDefined()
+})
+
+test('an autopilot run handed over for review keeps a steady frame, marked done', async ($, on) => {
+  // 'other' ran one that has reached review; 'me' is still running its own
+  const written = [
+    {
+      path: '/cfg/sessions-sidebar/state/other.json',
+      text: '{"running":0,"isAutopilot":false,"hasAutopilot":true}',
+    },
+  ]
+  await openSidebar($, on, '    1\n    3\n', () => '', written)
+
+  const ui = await mountPane($, 'terminal')
+  expect(await ui.findAll({ type: 'Text', text: ' ⚡ AUTOPILOT · done ' })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Text', text: /^ ⚡ AUTOPILOT $/ })).toHaveLength(1)
 })
 
 test('lists worktrees no live session works in or is named after as dormant', async ($, on) => {
@@ -1414,6 +1429,9 @@ test('a worker resumed in a tab stays under the session that launched it', async
     ),
   ).toEqual(['row-1', 'row-3'])
   expect(await ui.find({ type: 'Text', text: /^↳ $/ })).toBeDefined()
+  // 'me' launched a batch and 'other' runs no autopilot: the batch is done, its frame steady
+  expect(await ui.find({ type: 'Text', text: ' ⚡ AUTOPILOT · done ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ ⚡ AUTOPILOT $/ })).toBeUndefined()
   // it has a tab: Close all closes it rather than stopping it
   await ui.press({ key: 'heading-live-menu' })
   expect(await ui.find({ type: 'Text', text: /Close all 2 live sessions, keeping/ })).toBeDefined()

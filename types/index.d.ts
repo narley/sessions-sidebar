@@ -10,7 +10,9 @@ export type SessionRow = {
   // the linked worktree it works in, and the repo that owns it; absent in the main checkout
   worktree?: { path: string; repo: string }
   agents: number
-  isAutopilot: boolean
+  // a session that ran ioi-autopilot: `running` until its run hands over for review (a batch
+  // until its workers do), `done` after
+  autopilot?: 'running' | 'done'
   // the main loop's model, as /model shows it
   model?: string
   // the session's colour as /color set it; absent when it has none
