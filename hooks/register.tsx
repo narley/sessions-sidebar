@@ -2958,9 +2958,8 @@ export const register: Register = on => {
                     hover={{ color: 'cyan' }}
                     onPress={() => toggleRepo($, one.path)}
                   >
-                    {`${repos.selected.includes(one.path) ? '■' : '□'} ${baseName(one.path)}${
-                      one.live === 0 ? '' : ` ● ${one.live}`
-                    }`}
+                    {`${repos.selected.includes(one.path) ? '■' : '□'} ${baseName(one.path)}`}
+                    {one.live > 0 && <Text dimColor>{` ● ${one.live}`}</Text>}
                   </Button>
                 </Box>
               ))}

@@ -1081,8 +1081,9 @@ test('⌂ at the top picks the repos every section shows', async ($, on) => {
   expect(await ui.find({ type: 'Button', text: '2418-fix-side' })).toBeUndefined()
 
   await ui.press({ key: 'repos-toggle' })
-  // the busiest first, with how many run in it
+  // the busiest first, with how many run in it, dim inside the same press
   expect(await ui.find({ key: 'repos-pick-0', text: '■ ioi ● 3' })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^ ● 3$/ }))?.props.dimColor).toBe(true)
   expect(await ui.find({ key: 'repos-pick-1', text: '□ fix' })).toBeDefined()
   await ui.press({ key: 'repos-pick-1' })
 
