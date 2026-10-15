@@ -497,6 +497,91 @@ test('an autopilot run handed over for review keeps a steady frame, marked done'
   expect(await ui.findAll({ type: 'Text', text: /^ ⚡ AUTOPILOT $/ })).toHaveLength(1)
 })
 
+test('the oldest tabbed session alerts when a background one waits or finishes, and when autopilot is done', async ($, on) => {
+  const sent: object[] = []
+  on('ui.notify', (_$, e) => {
+    sent.push(e)
+
+    return { value: { isSent: true as const, channel: 'iterm2' as const } }
+  })
+  const written: { path: string; text: string }[] = []
+  const worker = (status: string) => ({
+    path: '/cfg/sessions/8.json',
+    text: JSON.stringify({ ...FILES['/cfg/sessions/8.json'], status }),
+  })
+  const autopilot = (isRunning: boolean) => ({
+    path: '/cfg/sessions-sidebar/state/auto.json',
+    text: JSON.stringify({ running: 0, isAutopilot: isRunning, hasAutopilot: true }),
+  })
+  written.push(autopilot(true))
+  // 'me' is the oldest with a tab: 3 is not running
+  await openSidebar($, on, '    1\n    4\n    8\n', () => '', written)
+  const refresh = () =>
+    $.command.run({
+      command: 'sessions-sidebar',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 200 },
+    })
+
+  // the first look only learns how things stand
+  expect(sent).toEqual([])
+  written.push(worker('waiting'))
+  await refresh()
+  written.push(worker('busy'))
+  await refresh()
+  written.push(worker('idle'), autopilot(false))
+  await refresh()
+  await refresh()
+  expect(sent).toEqual([
+    { text: 'Waiting for you, in the background', title: 'probe-2412' },
+    { text: 'Autopilot done: its ticket went to review', title: '2441-autopilot' },
+    { text: 'Finished, in the background', title: 'probe-2412' },
+  ])
+})
+
+test('only the oldest tabbed session alerts; a batch alerts once none of its workers runs on', async ($, on) => {
+  const sent: object[] = []
+  on('ui.notify', (_$, e) => {
+    sent.push(e)
+
+    return { value: { isSent: true as const, channel: 'iterm2' as const } }
+  })
+  const written: { path: string; text: string }[] = []
+  const worker = (isRunning: boolean) => ({
+    path: '/cfg/sessions-sidebar/state/bgjob.json',
+    text: JSON.stringify({ running: 0, isAutopilot: isRunning, hasAutopilot: true }),
+  })
+  // 2441-autopilot started the background worker
+  written.push(worker(true), {
+    path: '/cfg/sessions-sidebar/launches.json',
+    text: JSON.stringify({ ab12cd34: 'auto' }),
+  })
+  await openSidebar($, on, '    1\n    3\n    4\n    8\n', () => '', written)
+  const refresh = () =>
+    $.command.run({
+      command: 'sessions-sidebar',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 200 },
+    })
+
+  // session 3 has run longest: 'me' sends nothing
+  written.push(worker(false))
+  await refresh()
+  expect(sent).toEqual([])
+
+  // 3 has ended: 'me' sends from its next look on
+  written.push(worker(true), { path: '/cfg/sessions/3.json', text: '' })
+  await refresh()
+  written.push(worker(false))
+  await refresh()
+  expect(sent).toEqual([
+    { text: 'Autopilot done: its ticket went to review', title: 'probe-2412' },
+    { text: 'Autopilot batch done', title: '2441-autopilot' },
+  ])
+})
+
 test('lists worktrees no live session works in or is named after as dormant', async ($, on) => {
   await openSidebar($, on, '    1\n    3\n    4\n')
 

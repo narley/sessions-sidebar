@@ -1080,6 +1080,54 @@ const weekdayTime = ($: EngineInterface, resetsAt: string) => {
   return formatted
 }
 
+// the live sessions as the last refresh saw them, kept only by the session that sends the alerts:
+// the longest running with a tab of its own, which every sidebar picks alike. Unset until it has
+// looked once, so a reload or a session newly sending alerts nothing it never saw change
+let lastSeen: ReadonlyMap<string, SessionRow> | undefined
+let hasToldNoChannel = false
+
+// desktop alerts for what no tab tells of itself: a background session that waits for an answer or
+// finishes, an autopilot run handed over for review, and a batch none of whose workers runs on.
+// A tab's own session alerts through Warp
+const alertChanges = async ($: EngineInterface, live: readonly SessionRow[]) => {
+  const isSender = live.find(one => one.jobId === undefined)?.isCurrent ?? false
+  const before = lastSeen
+  lastSeen = isSender ? new Map(live.map(one => [one.sessionId, one])) : undefined
+  if (before === undefined) return
+
+  const changed = live.flatMap(one => {
+    const was = before.get(one.sessionId)
+    if (was === undefined) return []
+    if (was.autopilot === 'running' && one.autopilot === 'done') {
+      return [{ title: one.name, text: 'Autopilot done: its ticket went to review' }]
+    }
+    if (one.jobId === undefined || was.status === one.status) return []
+    if (one.status === 'waiting')
+      return [{ title: one.name, text: 'Waiting for you, in the background' }]
+    if (was.status === 'busy' && one.status === 'idle') {
+      return [{ title: one.name, text: 'Finished, in the background' }]
+    }
+
+    return []
+  })
+  const isBatchRunning = (rows: Iterable<SessionRow>, launcher: SessionRow) =>
+    [...rows].some(one => one.launchedBy === launcher.pid && one.autopilot === 'running')
+  const batches = live.flatMap(launcher =>
+    before.has(launcher.sessionId) &&
+    isBatchRunning(before.values(), launcher) &&
+    !isBatchRunning(live, launcher)
+      ? [{ title: launcher.name, text: 'Autopilot batch done' }]
+      : [],
+  )
+  for (const alert of [...changed, ...batches]) {
+    const sent = await $.ui.notify(alert.text, { title: alert.title }).catch(() => undefined)
+    if (sent?.isSent === false && sent.reason === 'no-channel' && !hasToldNoChannel) {
+      hasToldNoChannel = true
+      $.ui.toast('Session alerts need a channel: /config, Notifications, iTerm2 (Warp shows those)')
+    }
+  }
+}
+
 const refresh = async ($: EngineInterface) => {
   const configDir = await configDirOf($)
   const [
@@ -1124,6 +1172,7 @@ const refresh = async ($: EngineInterface) => {
     $.session.usage().catch(() => undefined),
     $.clock.now(),
   ])
+  await alertChanges($, live)
   const info = {
     limits: await Promise.all(
       (usage?.rateLimits ?? []).flatMap(limit => {
