@@ -79,6 +79,8 @@ const pulse = atom({ plugin: 'sessions-sidebar', key: 'pulse' } as const, false)
 const usageInfo = atom({ plugin: 'sessions-sidebar', key: 'usage' } as const, { limits: [] })
 // the one question the sidebar is asking, drawn under the row its key names
 const question = atom({ plugin: 'sessions-sidebar', key: 'question' } as const, null)
+// this session's agents at work, which its row's agents line offers to show in the main view
+const ownAgents = atom({ plugin: 'sessions-sidebar', key: 'agents' } as const, [])
 // set by each render, read by the scroll hook, which has no layout of its own to clamp against
 let maxListOffset = 0
 
@@ -534,13 +536,24 @@ const publishOwnState = async (
     lastEffortOf($, transcript),
     $.session.usage().catch(() => undefined),
   ])
+  // one held on its own background work (a test run) or a plan's approval is still at work
+  const atWork = agents.filter(agent => agent.status === 'running' || agent.status === 'waiting')
+  // a label per agent, as a question's answer is its text
+  const labelled = atWork.map((agent, index) => {
+    const label = `${agent.description} · ${agent.type}`
+    const before = atWork
+      .slice(0, index)
+      .filter(other => `${other.description} · ${other.type}` === label).length
+
+    return { id: agent.id, label: before === 0 ? label : `${label} (${before + 1})` }
+  })
+  if (JSON.stringify(labelled) !== JSON.stringify(await read($, ownAgents))) {
+    await update($, ownAgents, () => labelled)
+  }
   const usd = usage?.cost?.usd
   const percent = usage?.context.percent
   const state = {
-    // one held on its own background work (a test run) or a plan's approval is still at work
-    running:
-      agents.filter(agent => agent.status === 'running' || agent.status === 'waiting').length +
-      workflowAgents,
+    running: atWork.length + workflowAgents,
     isAutopilot: autopilot.isRunning,
     hasAutopilot: autopilot.hasRun,
     model,
@@ -1758,6 +1771,22 @@ const answerQuestion = async (
 
 const liveKey = (one: SessionRow) => `live-${one.pid}`
 
+const BACK_TO_MAIN = 'Back to the main conversation'
+
+// the agent picked, by its label, in the main view as the tasks list shows it; only a press of the
+// person's own may move the view
+const showAgent = async ($: EngineInterface, choice: string) => {
+  const agentId = (await read($, ownAgents)).find(agent => agent.label === choice)?.id
+  if (choice !== BACK_TO_MAIN && agentId === undefined) {
+    $.ui.toast(`${choice}: no longer at work`)
+
+    return
+  }
+
+  const shown = await $.ui.view(agentId === undefined ? {} : { agentId })
+  if (shown.deny !== undefined) $.ui.toast(`Could not show it: ${shown.deny}`)
+}
+
 const removeWorktreeIfClean = async ($: EngineInterface, one: SessionRow) => {
   const { worktree } = one
   if (worktree === undefined) return
@@ -2104,6 +2133,7 @@ export const register: Register = on => {
       repoQuery,
       filters,
       newMenu,
+      agentsHere,
     ] = await Promise.all([
       read($, rows),
       read($, dormantRows),
@@ -2122,6 +2152,7 @@ export const register: Register = on => {
       read($, repoSearch),
       read($, sectionFilters),
       read($, newSessionMenu),
+      read($, ownAgents),
     ])
     const columns = Math.max(1, e.props.bodyColumns)
     const rule = '─'.repeat(columns)
@@ -2363,6 +2394,16 @@ export const register: Register = on => {
     )
     const isCompact = level === 'compact'
     const isFull = level === 'full'
+    // this session's own agents line offers its agents for the main view, and the way back while
+    // one is shown there
+    const isViewingAgent = e.props.view.agentId !== undefined
+    const agentChoices = [
+      ...(isViewingAgent ? [BACK_TO_MAIN] : []),
+      ...agentsHere.map(agent => agent.label),
+    ]
+    const agentsKey = (one: SessionRow) => `agents-${one.pid}`
+    const hasAgentsLine = (one: SessionRow) =>
+      one.agents > 0 || (one.isCurrent && agentChoices.length > 0)
     // compact rows sit without a gap, all but the last, which keeps the one before the next heading;
     // a running autopilot gets a frame, unless it shares its batch's
     const liveRow = (
@@ -2375,7 +2416,11 @@ export const register: Register = on => {
         (isCompact
           ? 0
           : 1 + (one.branch === undefined ? 0 : 1) + (one.context === undefined ? 0 : 1)) +
-        (isFull ? (one.agents > 0 ? 1 : 0) + (one.cost === undefined ? 0 : 1) : 0) +
+        (isFull
+          ? (hasAgentsLine(one) ? 1 : 0) +
+            (one.cost === undefined ? 0 : 1) +
+            questionRows(agentsKey(one))
+          : 0) +
         // the frame's two edges and the badge
         (frame === undefined ? 0 : 3) +
         questionRows(liveKey(one)),
@@ -2465,14 +2510,39 @@ export const register: Register = on => {
           {isFull &&
             one.cost !== undefined &&
             liveLine({ one, icon: 'cost', text: `${one.cost.toFixed(2)} spent` })}
-          {isFull && one.agents > 0 && (
+          {isFull && hasAgentsLine(one) && (
             <Box flexDirection="row">
               {marker(one)}
-              <Text color="yellow" wrap="truncate-end">
-                {`  ⚙ ${one.agents} ${one.agents === 1 ? 'agent' : 'agents'} working`}
-              </Text>
+              <Box flexGrow={1} flexShrink={1} overflow="hidden">
+                <Text color="yellow" wrap="truncate-end">
+                  {one.agents > 0
+                    ? `  ⚙ ${one.agents} ${one.agents === 1 ? 'agent' : 'agents'} working`
+                    : '  ⚙ an agent shown above'}
+                </Text>
+              </Box>
+              {one.isCurrent && agentChoices.length > 0 && (
+                <Box key={`agents-menu-row-${one.pid}`} flexShrink={0}>
+                  <Button
+                    key={`agents-menu-${one.pid}`}
+                    plain
+                    dimColor
+                    hover={{ color: 'cyan', dimColor: false }}
+                    onPress={() =>
+                      toggleQuestion(
+                        $,
+                        agentsKey(one),
+                        "Show which agent's transcript in the main view?",
+                        agentChoices,
+                      )
+                    }
+                  >
+                    ≡
+                  </Button>
+                </Box>
+              )}
             </Box>
           )}
+          {isFull && questionBox(agentsKey(one), choice => showAgent($, choice))}
           {questionBox(liveKey(one), choice => answerSessionQuestion($, one, choice))}
         </Box>
       ),

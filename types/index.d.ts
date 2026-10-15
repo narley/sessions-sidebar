@@ -99,6 +99,8 @@ declare module 'claude-code' {
       } | null
       repos: { selected: string[]; options: RepoOption[] }
       repoSearch: string
+      // this session's own agents at work, by $.agent.list()'s id, each label told apart
+      agents: { id: string; label: string }[]
     }
   }
 }

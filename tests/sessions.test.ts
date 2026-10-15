@@ -374,7 +374,7 @@ const openSidebar = async (
   return clock
 }
 
-const mountPane = ($: Engine, surface: 'terminal' | 'desktop') =>
+const mountPane = ($: Engine, surface: 'terminal' | 'desktop', view: { agentId?: string } = {}) =>
   $.ui.mount({
     plugin: 'sessions-sidebar',
     surface,
@@ -386,7 +386,7 @@ const mountPane = ($: Engine, surface: 'terminal' | 'desktop') =>
       bodyColumns: 34,
       placement: 'dock',
       scroll: { offset: 0, bodyRows: 40 },
-      view: {},
+      view,
     },
   })
 
@@ -437,6 +437,42 @@ test('shows how many agents each session is running', async ($, on) => {
   expect(await ui.findAll({ type: 'Text', text: /^ {2}⚙ 4 agents working$/ })).toHaveLength(2)
   // 2441-autopilot is idle and published nothing: no line
   expect(await ui.find({ type: 'Text', text: /⚙ [^4]/ })).toBeUndefined()
+})
+
+test("this session's agents line shows a picked agent in the main view, and the way back", async ($, on) => {
+  const viewed: object[] = []
+  on('agent.list', () => ({
+    value: [
+      { id: 'a', description: 'review', type: 'general-purpose', status: 'running' },
+      { id: 'b', description: 'review', type: 'general-purpose', status: 'waiting' },
+      { id: 'c', description: 'search', type: 'Explore', status: 'completed' },
+    ],
+  }))
+  on('ui.view', (_$, e) => {
+    viewed.push(e)
+
+    return { value: {} }
+  })
+  await openSidebar($, on, '    1\n    3\n')
+
+  const ui = await mountPane($, 'terminal')
+  // another session's agents run in its own process: its line offers none
+  expect(await ui.find({ type: 'Text', text: /^ {2}⚙ 4 agents working$/ })).toBeDefined()
+  expect(await ui.find({ key: 'agents-menu-3' })).toBeUndefined()
+  await ui.press({ key: 'agents-menu-1' })
+  // the two at work, told apart; not the one that finished
+  expect(await ui.find({ type: 'Button', text: /^› review · general-purpose$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: '› review · general-purpose (2)' })).toBeDefined()
+  expect(await ui.find({ text: /search/ })).toBeUndefined()
+  await ui.press({ key: 'answer-agents-1-1' })
+  expect(viewed).toEqual([{ agentId: 'b' }])
+  await ui.unmount()
+
+  // while one is shown, the way back comes first
+  const shown = await mountPane($, 'terminal', { agentId: 'b' })
+  await shown.press({ key: 'agents-menu-1' })
+  await shown.press({ key: 'answer-agents-1-0' })
+  expect(viewed).toEqual([{ agentId: 'b' }, {}])
 })
 
 test('a session whose last autopilot run has not reached review shows a bolt', async ($, on) => {
