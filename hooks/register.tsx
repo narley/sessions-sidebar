@@ -111,6 +111,15 @@ const placeOf = (cwd: string) => {
 
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`)
 
+// a row matches while one of its texts holds the query, case aside
+const holds = (query: string, texts: readonly (string | undefined)[]) => {
+  const wanted = query.trim().toLowerCase()
+
+  return wanted === '' || texts.some(text => text?.toLowerCase().includes(wanted) ?? false)
+}
+
+const liveTexts = (one: SessionRow) => [one.name, one.branch, one.place]
+
 const ticketOf = (text: string | undefined) =>
   text === undefined ? undefined : /^(\d+)(?:-|$)/.exec(text)?.[1]
 
@@ -1478,6 +1487,40 @@ const focusNextSession = async ($: EngineInterface) => {
   if (target !== undefined) await focusWarpTab($, target)
 }
 
+// /go's target among the other sessions: the one named so, case aside, else the first it finds
+const sessionMatching = (list: readonly SessionRow[], query: string) => {
+  const others = list.filter(one => !one.isCurrent)
+
+  return (
+    others.find(one => one.name.toLowerCase() === query.toLowerCase()) ??
+    others.find(one => holds(query, liveTexts(one)))
+  )
+}
+
+// /go's typeahead: the other sessions whose name, branch or place holds what is typed. The box
+// swaps only the word at the cursor, so once a word is typed a name with spaces is offered by its
+// rest, to those it starts with
+const goSuggestions = (
+  list: readonly SessionRow[],
+  { typed, before, token }: { typed: string; before: string; token: string },
+) =>
+  list.flatMap(one => {
+    const isMatch =
+      before === ''
+        ? holds(typed, liveTexts(one))
+        : one.name.toLowerCase().startsWith(typed.toLowerCase())
+    const text = one.name.slice(before.length)
+    if (one.isCurrent || !isMatch || text === '' || text === token) return []
+
+    return [
+      {
+        text,
+        label: one.name,
+        description: `${one.jobId === undefined ? one.status : `${one.status} in the background`} · ${one.place}`,
+      },
+    ]
+  })
+
 // Warp closes a tab whose shell exits, so once the session has exited its tab's shell is hung up;
 // detached, so it outlives a session that closes itself, and deaf to the TERM that may reach it with
 // that session's. $1 the session's pid, $2 its shell's, $3 the log
@@ -1914,6 +1957,12 @@ export const register: Register = on => {
       name: 'statusline-toggle',
       description: 'Hide or show the status line in every session of this profile',
     })
+    await $.command.register({
+      name: 'go',
+      description: "Switch to another session's tab; alone, to the next one",
+      argumentHint: '[session]',
+      immediate: true,
+    })
     // only a session that has never published its state is new: a reload keeps the person's /color
     const isOpenedByNewSession = (await $.env.get('SESSIONS_SIDEBAR_COLOR')) === 'random'
     const ownState = stateFileOf(await configDirOf($), await $.session.id())
@@ -1974,6 +2023,39 @@ export const register: Register = on => {
     await $.fs.write(marker, '')
 
     return { text: 'Status line hidden in every session.' }
+  })
+
+  // a background session attaches as its row's click does
+  on('command.run', { command: 'go' }, async ($, e) => {
+    const query = e.args.trim()
+    if (query === '') {
+      await focusNextSession($)
+
+      return {}
+    }
+
+    const target = sessionMatching(await read($, rows), query)
+    if (target === undefined) return { text: `No other live session matches "${query}".` }
+
+    await openLiveSession($, target)
+
+    return {}
+  })
+
+  on('prompt.autocomplete', async ($, e, next) => {
+    const result = await next(e)
+    const command = /^\/go\s+/.exec(e.text)
+    if (command === null || e.start < command[0].length) return result
+
+    const typed = e.text.slice(command[0].length, e.cursor)
+    const before = e.text.slice(command[0].length, e.start)
+
+    return {
+      suggestions: [
+        ...result.suggestions,
+        ...goSuggestions(await read($, rows), { typed, before, token: e.token }),
+      ],
+    }
   })
 
   on('command.run', { command: 'sessions-sidebar' }, async $ => {
@@ -2474,13 +2556,6 @@ export const register: Register = on => {
     const isSearching = (section: Section) => searches[section] !== undefined
     const setSearch = (section: Section, text: string | undefined) =>
       update($, sectionSearches, all => ({ ...all, [section]: text }))
-    // a row matches while one of its texts holds the query, case aside
-    const holds = (query: string, texts: readonly (string | undefined)[]) => {
-      const wanted = query.trim().toLowerCase()
-
-      return wanted === '' || texts.some(text => text?.toLowerCase().includes(wanted) ?? false)
-    }
-    const liveTexts = (one: SessionRow) => [one.name, one.branch, one.place]
     const placeTexts = (one: { name: string; place: string }) => [one.name, one.place]
     // what Enter opens: the first row the text as submitted matches, ahead of any redraw
     const firstOf =

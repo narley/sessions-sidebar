@@ -1,4 +1,4 @@
-import type { On } from 'claude-code'
+import type { On, PromptAutocompleteInput, PromptAutocompleteResult } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
@@ -1615,6 +1615,66 @@ test('/exit switches to the next session in the sidebar, wrapping round', async 
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 'me', resume: { id: 'me' } })
 
   expect(commands).toEqual(['ps -E -ww -o command= -p 4', 'open warppreview://session/abc4'])
+})
+
+test('/go switches to the session it names, else the first it finds; alone, to the next', async ($, on) => {
+  const commands: string[] = []
+  await openSidebar($, on, '    1\n    3\n    4\n', argv => {
+    commands.push(argv.join(' '))
+
+    return argv[0] === 'ps' ? 'claude WARP_FOCUS_URL=warppreview://session/abc4\n' : ''
+  })
+  const go = (args: string) =>
+    $.command.run({
+      command: 'go',
+      args,
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 200 },
+    })
+
+  // the branch counts too: 2441's is 2441-ioi-review
+  expect((await go('IOI-REVIEW')).text).toBeUndefined()
+  expect(commands).toEqual(['ps -E -ww -o command= -p 4', 'open warppreview://session/abc4'])
+  // a whole name, case aside
+  await go('Worktree 2412')
+  expect(commands.at(-2)).toBe('ps -E -ww -o command= -p 3')
+  // this session is never its own target
+  expect((await go('ioi-main')).text).toBe('No other live session matches "ioi-main".')
+  // alone: the next tab after this one
+  await go('')
+  expect(commands.at(-2)).toBe('ps -E -ww -o command= -p 4')
+})
+
+test('/go offers the other sessions as you type, a name with spaces a word at a time', async ($, on) => {
+  // core adds no rows of its own to this event
+  on('prompt.autocomplete', () => ({ suggestions: [] }))
+  await openSidebar($, on, '    1\n    3\n    4\n')
+  const complete = async (text: string) => {
+    const start = text.search(/\S*$/)
+    // the typings leave the event off a test's `$`; the engine raises it all the same
+    const prompt = $.prompt as unknown as {
+      autocomplete: (e: PromptAutocompleteInput) => Promise<PromptAutocompleteResult>
+    }
+
+    return (
+      await prompt.autocomplete({ text, cursor: text.length, token: text.slice(start), start })
+    ).suggestions
+  }
+
+  // 2412 and 2441 both hold 24; this session is not offered
+  expect(await complete('/go 24')).toEqual([
+    { text: 'worktree 2412', label: 'worktree 2412', description: 'idle · worktree 2412' },
+    { text: '2441-autopilot', label: '2441-autopilot', description: 'idle · worktree 2441' },
+  ])
+  // a word typed: the rest of each name it starts
+  expect(await complete('/go worktree 2')).toEqual([
+    { text: '2412', label: 'worktree 2412', description: 'idle · worktree 2412' },
+  ])
+  // whole: nothing left to offer
+  expect(await complete('/go worktree 2412')).toEqual([])
+  // any other prompt is left alone
+  expect(await complete('/goal 24')).toEqual([])
+  expect(await complete('/go')).toEqual([])
 })
 
 test('a session ended from outside (SIGTERM) does not switch tabs', async ($, on) => {
