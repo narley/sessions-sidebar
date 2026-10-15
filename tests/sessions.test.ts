@@ -395,7 +395,7 @@ test('lists live sessions, drops dead pids, marks the current one', async ($, on
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await mountPane($, surface)
-    expect(await ui.find({ type: 'Text', text: 'Live' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^Live$/ }))?.props.weight).toBe('bold')
     expect(await ui.find({ type: 'Text', text: 'ioi-main' })).toBeDefined()
     // every live session shows its branch and its worktree, the main checkout included
     expect(await ui.find({ type: 'Text', text: /^main$/ })).toBeDefined()
@@ -419,21 +419,24 @@ test('shows how many agents each session is running', async ($, on) => {
     value: [
       { id: 'a', description: 'review', type: 'general-purpose', status: 'running' },
       { id: 'b', description: 'search', type: 'Explore', status: 'completed' },
+      // held on the tests it runs in the background: still at work
+      { id: 'c', description: 'second review', type: 'general-purpose', status: 'waiting' },
+      // a teammate between turns
+      { id: 'd', description: 'helper', type: 'teammate', status: 'idle' },
     ],
   }))
   await openSidebar($, on, '    1\n    3\n    4\n', () => '', written)
 
-  // one subagent running, plus the one workflow agent still writing in an unfinished run
+  // two subagents at work, plus the one workflow agent still writing in an unfinished run
   expect(written).toContainEqual({
     path: '/cfg/sessions-sidebar/state/me.json',
-    text: '{"running":2,"isAutopilot":true,"hasAutopilot":true,"model":"claude-opus-5-5[1m]","effort":"xhigh","cost":12.4,"context":{"percent":12,"window":1000000}}',
+    text: '{"running":3,"isAutopilot":true,"hasAutopilot":true,"model":"claude-opus-5-5[1m]","effort":"xhigh","cost":12.4,"context":{"percent":12,"window":1000000}}',
   })
   const ui = await mountPane($, 'terminal')
-  // 'me' is busy: its own loop counts as one more
-  expect(await ui.find({ type: 'Text', text: /^ {2}⚙ 3 agents working$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^ {2}⚙ 4 agents working$/ })).toBeDefined()
+  // 'me' is busy: its own loop counts as one more; 'other' published 4
+  expect(await ui.findAll({ type: 'Text', text: /^ {2}⚙ 4 agents working$/ })).toHaveLength(2)
   // 2441-autopilot is idle and published nothing: no line
-  expect(await ui.find({ type: 'Text', text: /⚙ [^34]/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /⚙ [^4]/ })).toBeUndefined()
 })
 
 test('a session whose last autopilot run has not reached review shows a bolt', async ($, on) => {

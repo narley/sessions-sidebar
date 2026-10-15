@@ -528,7 +528,10 @@ const publishOwnState = async (
   const usd = usage?.cost?.usd
   const percent = usage?.context.percent
   const state = {
-    running: agents.filter(agent => agent.status === 'running').length + workflowAgents,
+    // one held on its own background work (a test run) or a plan's approval is still at work
+    running:
+      agents.filter(agent => agent.status === 'running' || agent.status === 'waiting').length +
+      workflowAgents,
     isAutopilot: autopilot.isRunning,
     hasAutopilot: autopilot.hasRun,
     model,
@@ -2121,7 +2124,7 @@ export const register: Register = on => {
             <Box flexGrow={1}>
               <Text>
                 {' '}
-                <Text bold>{title}</Text>
+                <Text weight="bold">{title}</Text>
                 <Text dimColor>{`  ${matched === count ? count : `${matched}/${count}`}`}</Text>
               </Text>
             </Box>
@@ -2174,7 +2177,7 @@ export const register: Register = on => {
                 <Box key={`${section}-choice-${one.id}-row`} flexDirection="row" flexShrink={0}>
                   <Text dimColor>{index === 0 ? ' ' : ' · '}</Text>
                   {one.id === choices.active ? (
-                    <Text bold color="cyan">
+                    <Text weight="bold" color="cyan">
                       {one.label}
                     </Text>
                   ) : (
@@ -2208,7 +2211,7 @@ export const register: Register = on => {
     // a run in progress pulses; one handed over for review keeps a steady green frame
     const frameColor = (frame: SessionRow['autopilot']) => (frame === 'done' ? 'green' : accent)
     const autopilotBadge = (frame: NonNullable<SessionRow['autopilot']>) => (
-      <Text backgroundColor={frameColor(frame)} color="black" bold>
+      <Text backgroundColor={frameColor(frame)} color="black" weight="bold">
         {frame === 'done' ? ' ⚡ AUTOPILOT · done ' : ' ⚡ AUTOPILOT '}
       </Text>
     )
@@ -2319,7 +2322,7 @@ export const register: Register = on => {
               <Box flexShrink={0}>
                 <Text>
                   <Text color={avatarOf(one)?.color}>▐</Text>
-                  <Text backgroundColor={avatarOf(one)?.color} color="black" bold>
+                  <Text backgroundColor={avatarOf(one)?.color} color="black" weight="bold">
                     {`${avatarOf(one)?.letter}${EFFORT_LETTERS[one.effort ?? ''] ?? ''}`}
                   </Text>
                   <Text color={avatarOf(one)?.color}>▌</Text>
@@ -2330,7 +2333,7 @@ export const register: Register = on => {
             )}
             <Box key={`row-${one.pid}`} flexGrow={1} flexShrink={1} overflow="hidden">
               {one.isCurrent ? (
-                <Text bold color="cyan" wrap="truncate-end">
+                <Text weight="bold" color="cyan" wrap="truncate-end">
                   {one.name}
                 </Text>
               ) : (
@@ -3054,7 +3057,7 @@ export const register: Register = on => {
         return (
           <Text>
             <Text color={avatar.color}>▐</Text>
-            <Text backgroundColor={avatar.color} color="black" bold>
+            <Text backgroundColor={avatar.color} color="black" weight="bold">
               {`${avatar.letter}${letter}`}
             </Text>
             <Text color={avatar.color}>▌</Text>
@@ -3098,7 +3101,7 @@ export const register: Register = on => {
               <Box key={`new-session-effort-${level ?? 'saved'}-row`} flexShrink={0}>
                 <Text> </Text>
                 {picker.effort === level ? (
-                  <Text bold color="cyan">
+                  <Text weight="bold" color="cyan">
                     {level === undefined ? 'saved' : EFFORT_LETTERS[level]}
                   </Text>
                 ) : (
@@ -3171,7 +3174,7 @@ export const register: Register = on => {
               <Text dimColor>{` ${limit.label} `}</Text>
               <Text color={usageColor(limit.percent)}>{usageBar(limit.percent).filled}</Text>
               <Text dimColor>{usageBar(limit.percent).track}</Text>
-              <Text color={usageColor(limit.percent)} bold>
+              <Text color={usageColor(limit.percent)} weight="bold">
                 {` ${String(limit.percent).padStart(3)}%`}
               </Text>
               {limit.resetsIn !== undefined && <Text dimColor>{`  resets ${limit.resetsIn}`}</Text>}
