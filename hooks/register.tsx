@@ -391,11 +391,20 @@ const worktreeOf = (cwd: string, name: string | undefined, worktrees: readonly W
 const AUTOPILOT_MARKERS =
   '"(content|text)":"<command-message>ioi-autopilot</command-message>|"name":"Skill","input":\\{"skill":"ioi-autopilot"|stage:: review\\\\*"[^`]'
 
+// since 2.1.299 a transcript also keeps copies of its API requests (`api-request-*` lines), which
+// repeat earlier messages out of order: a run's start among them would read as a new run, so the
+// marks on those lines are dropped
+const REQUEST_COPY = '{"type":"api-request-'
+
 const autopilotOf = async ($: EngineInterface, transcript: string) => {
   const found = await $.process
-    .run(['grep', '-o', '-E', AUTOPILOT_MARKERS, transcript])
+    .run(['grep', '-n', '-o', '-E', `^\\${REQUEST_COPY}|${AUTOPILOT_MARKERS}`, transcript])
     .catch(() => undefined)
-  const marks = (found?.stdout ?? '').trim().split('\n')
+  const matches = [...(found?.stdout ?? '').matchAll(/^(\d+):(.*)$/gm)]
+  const copies = new Set(matches.flatMap(([, line, text]) => (text === REQUEST_COPY ? [line] : [])))
+  const marks = matches.flatMap(([, line, text]) =>
+    text === REQUEST_COPY || copies.has(line) ? [] : [text ?? ''],
+  )
 
   return {
     hasRun: marks.some(mark => mark.includes('ioi-autopilot')),

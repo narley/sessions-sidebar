@@ -120,12 +120,15 @@ const STATES: Record<string, object> = {
   '/cfg/sessions-sidebar/collapsed.json': [],
 }
 
-// grep -o of each transcript's autopilot markers: 'me' finished one run and started another
+// grep -n -o of each transcript's autopilot markers and API request copies: 'me' finished one run
+// and started another, which a request copy repeats
 const AUTOPILOT_MARKS: Record<string, string> = {
   '/cfg/projects/-repo-ioi/me.jsonl': [
-    '"content":"<command-message>ioi-autopilot</command-message>',
-    'stage:: review\\"',
-    '"name":"Skill","input":{"skill":"ioi-autopilot"',
+    '3:"content":"<command-message>ioi-autopilot</command-message>',
+    '40:stage:: review\\"',
+    '52:"name":"Skill","input":{"skill":"ioi-autopilot"',
+    '60:{"type":"api-request-',
+    '60:"text":"<command-message>ioi-autopilot</command-message>',
   ].join('\n'),
 }
 
@@ -277,6 +280,7 @@ const openSidebar = async (
   psStdout: string,
   onOtherCommand: (argv: readonly string[]) => string = () => '',
   written: { path: string; text: string }[] = [],
+  autopilotMarks: Record<string, string> = AUTOPILOT_MARKS,
 ) => {
   mock.env(on, {
     CLAUDE_CONFIG_DIR: '/cfg',
@@ -336,7 +340,7 @@ const openSidebar = async (
       return ran(SAVED_COSTS)
     }
     if (command === 'grep' && rest.some(arg => arg.includes('ioi-autopilot'))) {
-      return ran(AUTOPILOT_MARKS[rest.at(-1) ?? ''] ?? '')
+      return ran(autopilotMarks[rest.at(-1) ?? ''] ?? '')
     }
     if (command === 'grep' && rest.some(arg => arg.includes('"effort"'))) {
       return ran(EFFORT_MARKS[rest.at(-1) ?? ''] ?? '')
@@ -580,6 +584,25 @@ test('only the oldest tabbed session alerts; a batch alerts once none of its wor
     { text: 'Autopilot done: its ticket went to review', title: 'probe-2412' },
     { text: 'Autopilot batch done', title: '2441-autopilot' },
   ])
+})
+
+test('a run handed over for review stays done though a request copy repeats its start', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  await openSidebar($, on, '    1\n    3\n', () => '', written, {
+    '/cfg/projects/-repo-ioi/me.jsonl': [
+      '3:"content":"<command-message>ioi-autopilot</command-message>',
+      '40:stage:: review\\"',
+      '60:{"type":"api-request-',
+      '60:"text":"<command-message>ioi-autopilot</command-message>',
+    ].join('\n'),
+  })
+
+  expect(
+    written.findLast(one => one.path === '/cfg/sessions-sidebar/state/me.json')?.text,
+  ).toContain('"isAutopilot":false,"hasAutopilot":true')
+  const ui = await mountPane($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: ' ⚡ AUTOPILOT · done ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ ⚡ AUTOPILOT $/ })).toBeUndefined()
 })
 
 test('lists worktrees no live session works in or is named after as dormant', async ($, on) => {
