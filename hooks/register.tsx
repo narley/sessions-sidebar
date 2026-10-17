@@ -396,44 +396,87 @@ const AUTOPILOT_MARKERS =
 // marks on those lines are dropped
 const REQUEST_COPY = '{"type":"api-request-'
 
-const autopilotOf = async ($: EngineInterface, transcript: string) => {
-  const found = await $.process
-    .run(['grep', '-n', '-o', '-E', `^\\${REQUEST_COPY}|${AUTOPILOT_MARKERS}`, transcript])
-    .catch(() => undefined)
-  const matches = [...(found?.stdout ?? '').matchAll(/^(\d+):(.*)$/gm)]
-  const copies = new Set(matches.flatMap(([, line, text]) => (text === REQUEST_COPY ? [line] : [])))
-  const marks = matches.flatMap(([, line, text]) =>
-    text === REQUEST_COPY || copies.has(line) ? [] : [text ?? ''],
-  )
+// /color appends its choice to the transcript, the last one wins; the effort is the last response's,
+// which /effort changes from the next one on, from the whole transcript, as a tail can hold none
+// (big tool results, or a resume's "No response requested.")
+const COLOR_MARK = '"agentColor":"'
+const EFFORT_MARK = '"effort":"'
+const TRANSCRIPT_MARKS = `^\\${REQUEST_COPY}|${AUTOPILOT_MARKERS}|${COLOR_MARK}[a-z]+"|${EFFORT_MARK}(low|medium|high|xhigh|max)"`
 
-  return {
-    hasRun: marks.some(mark => mark.includes('ioi-autopilot')),
-    isRunning: marks.at(-1)?.includes('ioi-autopilot') ?? false,
+// greps bytes $2..$3 of $1 for $4 once they end a line (else exits 3): a line still being written
+// would split a request copy from its marks, and the next read starts where this one ended
+const GREP_ADDED_BYTES =
+  '[ -z "$(tail -c +"$3" "$1" | head -c 1)" ] || exit 3; ' +
+  'tail -c +"$(($2 + 1))" "$1" | head -c "$(($3 - $2))" | grep -n -o -E "$4" || [ $? -eq 1 ]'
+
+type TranscriptMarks = {
+  offset: number
+  hasAutopilot: boolean
+  isAutopilot: boolean
+  color?: string
+  effort?: string
+}
+
+const NO_MARKS: TranscriptMarks = { offset: 0, hasAutopilot: false, isAutopilot: false }
+
+// ponytail: transcripts grow past 80 MB and each sidebar reads its own every refresh, so only the
+// bytes added since the last read are grepped; the module's own, so a reload reads each once again
+const marksCache = new Map<string, TranscriptMarks>()
+
+const transcriptMarksOf = async (
+  $: EngineInterface,
+  transcript: string,
+): Promise<TranscriptMarks> => {
+  const size = await $.fs
+    .stat(transcript)
+    .then(stat => stat.size)
+    .catch(() => undefined)
+  if (size === undefined) return NO_MARKS
+  const known = marksCache.get(transcript)
+  // a transcript that shrank was rewritten: read it again from the start
+  const from = known !== undefined && known.offset <= size ? known : NO_MARKS
+  if (from.offset === size) return from
+
+  const found = await $.process
+    .run([
+      'sh',
+      '-c',
+      GREP_ADDED_BYTES,
+      'marks',
+      transcript,
+      String(from.offset),
+      String(size),
+      TRANSCRIPT_MARKS,
+    ])
+    .catch(() => undefined)
+  if (found?.exitCode !== 0) return from
+
+  const matches = [...found.stdout.matchAll(/^(\d+):(.*)$/gm)]
+  const copies = new Set(matches.flatMap(([, line, text]) => (text === REQUEST_COPY ? [line] : [])))
+  const lastOf = (mark: string) =>
+    matches.findLast(([, , text]) => text?.startsWith(mark))?.[2]?.split('"')[3]
+  const runMarks = matches.flatMap(([, line, text = '']) =>
+    text === REQUEST_COPY ||
+    copies.has(line) ||
+    text.startsWith(COLOR_MARK) ||
+    text.startsWith(EFFORT_MARK)
+      ? []
+      : [text],
+  )
+  const marks = {
+    offset: size,
+    hasAutopilot: from.hasAutopilot || runMarks.some(mark => mark.includes('ioi-autopilot')),
+    isAutopilot: runMarks.at(-1)?.includes('ioi-autopilot') ?? from.isAutopilot,
+    color: lastOf(COLOR_MARK) ?? from.color,
+    effort: lastOf(EFFORT_MARK) ?? from.effort,
   }
+  marksCache.set(transcript, marks)
+
+  return marks
 }
 
 // what /color offers; `default` takes the colour away
 const SESSION_COLORS = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan']
-
-// /color appends its choice to the transcript, the last one wins
-const sessionColorOf = async ($: EngineInterface, transcript: string) => {
-  const found = await $.process
-    .run(['grep', '-o', '-E', '"agentColor":"[a-z]+"', transcript])
-    .catch(() => undefined)
-  const color = (found?.stdout ?? '').trim().split('\n').at(-1)?.split('"')[3]
-
-  return SESSION_COLORS.find(known => known === color)
-}
-
-// the effort its last response ran at, which /effort changes from the next one on; from the whole
-// transcript, as a tail can hold none (big tool results, or a resume's "No response requested.")
-const lastEffortOf = async ($: EngineInterface, transcript: string) => {
-  const found = await $.process
-    .run(['grep', '-o', '-E', '"effort":"(low|medium|high|xhigh|max)"', transcript])
-    .catch(() => undefined)
-
-  return (found?.stdout ?? '').trim().split('\n').at(-1)?.split('"')[3]
-}
 
 // before its first response, the effort a session started at: CLAUDE_CODE_EFFORT_LEVEL, its
 // --effort, or the one saved for its model, else for every model
@@ -536,13 +579,11 @@ const publishOwnState = async (
   if (own === undefined) return { running: 0, isAutopilot: false, hasAutopilot: false }
 
   const transcript = transcriptOf(configDir, own)
-  const [agents, workflowAgents, autopilot, model, color, lastEffort, usage] = await Promise.all([
+  const [agents, workflowAgents, marks, model, usage] = await Promise.all([
     $.agent.list().catch(() => []),
     runningWorkflowAgents($, transcript.replace(/\.jsonl$/, '')),
-    autopilotOf($, transcript),
+    transcriptMarksOf($, transcript),
     $.session.model().catch(() => undefined),
-    sessionColorOf($, transcript),
-    lastEffortOf($, transcript),
     $.session.usage().catch(() => undefined),
   ])
   // one held on its own background work (a test run) or a plan's approval is still at work
@@ -563,11 +604,11 @@ const publishOwnState = async (
   const percent = usage?.context.percent
   const state = {
     running: atWork.length + workflowAgents,
-    isAutopilot: autopilot.isRunning,
-    hasAutopilot: autopilot.hasRun,
+    isAutopilot: marks.isAutopilot,
+    hasAutopilot: marks.hasAutopilot,
     model,
-    color,
-    effort: lastEffort ?? (await startingEffortOf($, { configDir, own, model })),
+    color: SESSION_COLORS.find(known => known === marks.color),
+    effort: marks.effort ?? (await startingEffortOf($, { configDir, own, model })),
     // to the cent, so the file is rewritten as often as the figure drawn changes
     cost: usd === undefined ? undefined : Math.round(usd * 100) / 100,
     // absent until the live window's first response, and again just after a compaction

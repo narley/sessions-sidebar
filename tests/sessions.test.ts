@@ -134,12 +134,12 @@ const AUTOPILOT_MARKS: Record<string, string> = {
 
 // grep -o of each transcript's response efforts: 'me' went from high to xhigh
 const EFFORT_MARKS: Record<string, string> = {
-  '/cfg/projects/-repo-ioi/me.jsonl': '"effort":"high"\n"effort":"xhigh"',
+  '/cfg/projects/-repo-ioi/me.jsonl': '10:"effort":"high"\n55:"effort":"xhigh"',
 }
 
 // grep -o of each transcript's /color choices: 'me' was blue, then took it away
 const COLOR_MARKS: Record<string, string> = {
-  '/cfg/projects/-repo-ioi/me.jsonl': '"agentColor":"blue"\n"agentColor":"default"',
+  '/cfg/projects/-repo-ioi/me.jsonl': '20:"agentColor":"blue"\n58:"agentColor":"default"',
 }
 
 // /rename titles of sessions no longer running
@@ -274,6 +274,9 @@ const LISTINGS: Record<string, ReturnType<typeof entry>[]> = {
   ],
 }
 
+// every transcript's size, and the byte ranges grepped for its marks
+const transcript = { size: 1, reads: [] as string[] }
+
 const openSidebar = async (
   $: Engine,
   on: On,
@@ -288,6 +291,9 @@ const openSidebar = async (
     WARP_FOCUS_URL: 'warppreview://session/me',
   })
   on('fs.list', (_$, e) => ({ value: LISTINGS[e.path] ?? [] }))
+  on('fs.stat', () => ({
+    value: { kind: 'file', size: transcript.size, mtimeMs: NOW, isLink: false },
+  }))
   // what a test wrote reads back
   on('fs.read', (_$, e) => ({
     value:
@@ -339,14 +345,16 @@ const openSidebar = async (
     if (command === 'grep' && rest.some(arg => arg.includes('totalCostUSD'))) {
       return ran(SAVED_COSTS)
     }
-    if (command === 'grep' && rest.some(arg => arg.includes('ioi-autopilot'))) {
-      return ran(autopilotMarks[rest.at(-1) ?? ''] ?? '')
-    }
-    if (command === 'grep' && rest.some(arg => arg.includes('"effort"'))) {
-      return ran(EFFORT_MARKS[rest.at(-1) ?? ''] ?? '')
-    }
-    if (command === 'grep' && rest.some(arg => arg.includes('agentColor'))) {
-      return ran(COLOR_MARKS[rest.at(-1) ?? ''] ?? '')
+    // grep -n -o of the bytes a transcript gained: its autopilot markers, efforts and /color choices
+    if (command === 'sh' && rest.at(-1)?.includes('agentColor')) {
+      const file = rest[3] ?? ''
+      transcript.reads.push(`${rest[4]}..${rest[5]}`)
+
+      return ran(
+        [autopilotMarks[file], EFFORT_MARKS[file], COLOR_MARKS[file]]
+          .filter(marks => marks !== undefined)
+          .join('\n'),
+      )
     }
 
     return ran(onOtherCommand(e.argv))
@@ -1023,6 +1031,29 @@ test('above New Session: the 5h and 7d windows and how long this prompt cache st
   expect(await ui.find({ type: 'Text', text: '  resets Thu 17:46' })).toBeDefined()
   // 1h cache, last response 22 minutes ago
   expect(await ui.find({ type: 'Text', text: '● warm, 38m left' })).toBeDefined()
+})
+
+test('a session greps only the bytes its transcript gained since the last refresh', async ($, on) => {
+  transcript.reads = []
+  await openSidebar($, on, '    1\n    3\n    4\n')
+  // the panes mock places none, so the command refreshes again
+  const reopen = () =>
+    $.command.run({
+      command: 'sessions-sidebar',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 200 },
+    })
+  await reopen()
+  expect(transcript.reads).toEqual(['0..1'])
+
+  transcript.size = 5
+  try {
+    await reopen()
+  } finally {
+    transcript.size = 1
+  }
+  expect(transcript.reads).toEqual(['0..1', '1..5'])
 })
 
 test('before its first response a session shows the effort saved for its model', async ($, on) => {
