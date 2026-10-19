@@ -283,10 +283,20 @@ const recordLaunches = async (
         ? stdout.includes(one.jobId)
         : new RegExp(`\\bbackgrounded\\s*·\\s*${one.jobId}\\b`).test(stdout)),
   )
-  const started =
-    shown.length > 0 || !isLaunch
-      ? shown
-      : jobs.filter(one => one.startedAt >= since - 1000 && one.startedAt <= until + 1000)
+  // a worker can register a moment after `claude --bg` has printed its id (the first launch also
+  // starts the background service), so an id printed as backgrounded counts on its own
+  const printed = [...stdout.matchAll(/\bbackgrounded\s*·\s*([0-9a-f]{8})\b/g)].flatMap(match =>
+    match[1] === undefined ? [] : [match[1]],
+  )
+  const started = [
+    ...new Set([
+      ...(shown.length > 0 || printed.length > 0 || !isLaunch
+        ? shown
+        : jobs.filter(one => one.startedAt >= since - 1000 && one.startedAt <= until + 1000)
+      ).flatMap(one => (one.jobId === undefined ? [] : [one.jobId])),
+      ...printed,
+    ]),
+  ]
   if (started.length === 0) return
 
   const own = await $.session.id()
@@ -305,12 +315,12 @@ const recordLaunches = async (
     ),
   )
   const kept = Object.fromEntries(entries.filter((_, index) => isKept[index]))
-  const added = started.filter(one => one.jobId !== undefined && !(one.jobId in kept))
+  const added = started.filter(id => !(id in kept))
   if (added.length === 0) return
 
   await $.fs.write(
     launchesFileOf(configDir),
-    JSON.stringify({ ...kept, ...Object.fromEntries(added.map(one => [one.jobId, own])) }),
+    JSON.stringify({ ...kept, ...Object.fromEntries(added.map(id => [id, own])) }),
   )
 }
 

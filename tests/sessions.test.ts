@@ -1555,6 +1555,31 @@ test('a session records the background sessions its shell starts, so they always
   expect(await ui.find({ type: 'Text', text: /^34\.05 spent$/ })).toBeDefined()
 })
 
+test('a worker that registers only after its launch printed its id is still recorded', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  // the first launch also starts the background service: the worker is not registered yet
+  on('tool.call', () => ({
+    result: {
+      stdout: 'Starting background service…\nbackgrounded · cafe0123 · 2450 autopilot env1\n',
+      stderr: '',
+      interrupted: false,
+    },
+  }))
+  const clock = await openSidebar($, on, '    1\n    3\n', () => '', written)
+
+  await $.tool.call({
+    tool: 'Bash',
+    command: 'claude --bg --name "2450 autopilot env1" "/ioi-autopilot 2450"',
+  })
+  for (let i = 0; i < 50 && !written.some(one => one.path.endsWith('/launches.json')); i += 1) {
+    await clock.advance(1)
+  }
+  expect(written).toContainEqual({
+    path: '/cfg/sessions-sidebar/launches.json',
+    text: '{"cafe0123":"me"}',
+  })
+})
+
 test('only a launch records a background session, and the first to record it keeps it', async ($, on) => {
   const written: { path: string; text: string }[] = []
   let stdout = ''
