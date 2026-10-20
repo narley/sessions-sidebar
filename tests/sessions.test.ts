@@ -594,6 +594,26 @@ test('only the oldest tabbed session alerts; a batch alerts once none of its wor
   ])
 })
 
+for (const dm of [
+  '#2443 ready for final human review',
+  '#2443 done, not ready for review',
+  '#2443 needs you',
+]) {
+  test(`a run whose final DM reads "${dm}" is done`, async ($, on) => {
+    const written: { path: string; text: string }[] = []
+    await openSidebar($, on, '    1\n    3\n', () => '', written, {
+      '/cfg/projects/-repo-ioi/me.jsonl': [
+        '3:"content":"<command-message>ioi-autopilot</command-message>',
+        `90:${dm}`,
+      ].join('\n'),
+    })
+
+    expect(
+      written.findLast(one => one.path === '/cfg/sessions-sidebar/state/me.json')?.text,
+    ).toContain('"isAutopilot":false,"hasAutopilot":true')
+  })
+}
+
 test('a run handed over for review stays done though a request copy repeats its start', async ($, on) => {
   const written: { path: string; text: string }[] = []
   await openSidebar($, on, '    1\n    3\n', () => '', written, {

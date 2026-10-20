@@ -395,11 +395,13 @@ const worktreeOf = (cwd: string, name: string | undefined, worktrees: readonly W
   )
 }
 
-// a run starts with /ioi-autopilot or the model's Skill call and ends when it moves the ticket to
-// stage:: review; the skill's own text names that label in backticks, bare or as
-// `"add_labels=stage:: review"`, so a quote must follow it, and no backtick after that
+// a run starts with /ioi-autopilot or the model's Skill call and ends with its final DM (ready,
+// done but not ready, or stopped: "#2447 ready for final human review"), written before it is sent;
+// the skill's own text spells it `#<ticket>`, so a number must follow the #. Runs from before
+// 2026-10-16 ended by moving the ticket to stage:: review, which the skill names in backticks, bare
+// or as `"add_labels=stage:: review"`, so a quote must follow it, and no backtick after that
 const AUTOPILOT_MARKERS =
-  '"(content|text)":"<command-message>ioi-autopilot</command-message>|"name":"Skill","input":\\{"skill":"ioi-autopilot"|stage:: review\\\\*"[^`]'
+  '"(content|text)":"<command-message>ioi-autopilot</command-message>|"name":"Skill","input":\\{"skill":"ioi-autopilot"|#[0-9]+ (ready for final human review|done, not ready for review|needs you)|stage:: review\\\\*"[^`]'
 
 // since 2.1.299 a transcript also keeps copies of its API requests (`api-request-*` lines), which
 // repeat earlier messages out of order: a run's start among them would read as a new run, so the
