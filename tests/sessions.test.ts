@@ -125,7 +125,7 @@ const STATES: Record<string, object> = {
 const AUTOPILOT_MARKS: Record<string, string> = {
   '/cfg/projects/-repo-ioi/me.jsonl': [
     '3:"content":"<command-message>ioi-autopilot</command-message>',
-    '40:stage:: review\\"',
+    '40:stage:: review\\" ',
     '52:"name":"Skill","input":{"skill":"ioi-autopilot"',
     '60:{"type":"api-request-',
     '60:"text":"<command-message>ioi-autopilot</command-message>',
@@ -350,9 +350,13 @@ const openSidebar = async (
       const file = rest[3] ?? ''
       transcript.reads.push(`${rest[4]}..${rest[5]}`)
 
+      // each fixture line `<n>:<match>` kept only where the pattern sent matches it, as grep would
+      const pattern = new RegExp(rest.at(-1) ?? '')
+
       return ran(
         [autopilotMarks[file], EFFORT_MARKS[file], COLOR_MARKS[file]]
-          .filter(marks => marks !== undefined)
+          .flatMap(marks => (marks === undefined ? [] : marks.split('\n')))
+          .filter(line => pattern.test(line.replace(/^\d+:/, '')))
           .join('\n'),
       )
     }
@@ -619,7 +623,7 @@ test('a run handed over for review stays done though a request copy repeats its 
   await openSidebar($, on, '    1\n    3\n', () => '', written, {
     '/cfg/projects/-repo-ioi/me.jsonl': [
       '3:"content":"<command-message>ioi-autopilot</command-message>',
-      '40:stage:: review\\"',
+      '40:stage:: review\\" ',
       '60:{"type":"api-request-',
       '60:"text":"<command-message>ioi-autopilot</command-message>',
     ].join('\n'),
