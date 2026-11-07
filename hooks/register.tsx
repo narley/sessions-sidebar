@@ -2118,7 +2118,7 @@ export const register: Register = on => {
       if (isAnyAutopilot || (await read($, pulse)))
         await update($, pulse, isLit => isAnyAutopilot && !isLit)
     })
-    void $.ui.open({ id: PANE, title: 'Sessions', columns: PANE_COLUMNS })
+    // opened by /sessions-sidebar, not on every session start
 
     return next(e)
   })
